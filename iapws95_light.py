@@ -1,5 +1,8 @@
 ''' Ordinary water substance (IAPWS95) properties based on Wagner and Pruss
-  (2002) in J. Phys. Chem. Ref. Data. '''
+(2002) in J. Phys. Chem. Ref. Data.
+  
+Computations are typically done nondimensionally, and in SI units otherwise.
+  '''
 
 import csv
 import numpy as np
@@ -78,7 +81,7 @@ _exp1_55_56 = 0.5 / (beta_res55_56)
 ''' Function dispatch utilities. '''
 
 def autocast(f):
-  ''' Wrapper for functions in two arguments to take type float or np.array. '''
+  ''' Wrapper for functions of two arguments to take type float or np.array. '''
   def wrapped(rho, T):
     rho = np.array(rho)
     T = np.array(T)
@@ -119,57 +122,76 @@ def dispatch_vec(functions, rho, T):
 
 @autocast
 def Z(rho:np.array, T:np.array):
+  ''' Compressibility factor as a function of dimensional density rho,
+  temperature T.'''
   # Reciprocal reduced volume and temperature
   d, t = np.array(rho / rhoc), np.array(Tc / T)
   return 1.0 + d * phir_d(d, t)
 
 @autocast
 def p(rho:np.array, T:np.array):
+  ''' Pressure as a function of dimensional density rho, temperature T.
+  If rho_satv(T) < rho < rho_satl(T), the returned value may not be accurate.
+  Due to the parametrization of the Helmholtz function, the pressure, which is a
+  function of derivatives of the Helmholtz function, is not well-behaved.
+  A more reliable representation of p is obtained by computing the saturation
+  pressure by Maxwell's construction (see function
+  iapws95_light.prho_sat).
+  
+  For performance, this function does not check whether the inputs are in
+  the mixed phase regime. '''
   # Reciprocal reduced volume and temperature
   d, t = np.array(rho / rhoc), np.array(Tc / T)
   return rho * R * T * (1.0 + d * phir_d(d, t))
 
-''' Scalar thermodynamic functions. ''' 
+''' Scalar (iterative) thermodynamic functions. '''
+
 def rho_pt(p:float, T:float, newton_rtol=1e-9, max_steps=16):
-  ''' Density evaluation using Newton's method. '''
+  ''' Density computed iteratively using Newton's method. '''
   t = Tc / T
   damping_factor = 1.0
   # Determine initial value
-  psat, rho_satl, rho_satv = saturation_curve(T)
-  
+  psat, rho_satl, rho_satv = prho_sat(T)
   if p > psat:
+    # Set initial value to saturated liquid density
     d = rho_satl / rhoc
   elif p < psat:
+    # Set initial value to saturated vapour density
     d = rho_satv / rhoc
   else:
-    raise ValueError("Saturation state entered; density is ambiguous.")
+    raise ValueError(f"Saturation state p = {p} Pa, T = {T} K entered; " +
+      "density is ambiguous.")
 
-  # Fixed Newton's method
+  # Refine d solution using Newton's method
   for i in range(max_steps):
-    # Cache value
-    _phir_d = phir_d(d, t)
     # Evaluate residual value, derivative
+    _phir_d = phir_d(d, t)
     val = -p / (rhoc * R * T) + d * (1.0 + d * _phir_d)
     deriv = 1.0 + d * (2.0 * _phir_d + d * phir_dd(d, t))
     # Take Newton step
     step = -damping_factor * val / deriv
     d += step
+    # Check termination condition
     if np.abs(step/d) < newton_rtol:
       break
   return d * rhoc
 
-def saturation_curve(T):
+def prho_sat(T):
   ''' Returns isothermal saturation curve properties as tuple
   (psat, rho_satl, rho_satv). Solves the Maxwell construction (see e.g. P.
   Junglas). '''
   # Compute reciprocal reduced temperature
   t = Tc / T
+  if t < 1:
+    return None, None, None
+
   # Define size-2 system for Maxwell construction for phase transition at T
-  phir_d = lambda d: phir_d(d, t)
-  phir = lambda d: phir(d, t)
-  phi0 = lambda d: phi0(d, t)
-  eq1 = lambda d1, d2: d2 * phir_d(d2) - d1 * phir_d(d1) - phir(d1) - phi0(d1) +phir(d2) + phi0(d2)
-  eq2 = lambda d1, d2: d1 + d1**2 * phir_d(d1) - d2 - d2**2 * phir_d(d2)
+  _phir_d = lambda d: phir_d(d, t)
+  _phir = lambda d: phir(d, t)
+  _phi0 = lambda d: phi0(d, t)
+  eq1 = lambda d1, d2: d2 * _phir_d(d2) - d1 * _phir_d(d1) \
+    - _phir(d1) - _phi0(d1) + _phir(d2) + _phi0(d2)
+  eq2 = lambda d1, d2: d1 + d1**2 * _phir_d(d1) - d2 - d2**2 * _phir_d(d2)
   eqvec = lambda d: np.array([eq1(d[0], d[1]), eq2(d[0], d[1])]).squeeze()
 
   # Solve system using fsolve, initial guess using older sat curve correlations
@@ -179,17 +201,17 @@ def saturation_curve(T):
   # Get saturation densities at given T
   rho_satl, rho_satv = d_final * rhoc
   # Compute saturation pressure (use either d_final[0] or d_final[1])
-  psat = d_final[0]*(1.0 + d_final[0]*phir_d(d_final[0], t)) \
+  psat = d_final[0]*(1.0 + d_final[0]*_phir_d(d_final[0])) \
     * rhoc * R * T
   return psat, rho_satl, rho_satv
 
 def x(rho, T):
   ''' Vapour mass fraction (steam quality). '''
-  psat, rho_satl, rho_satv = saturation_curve(T)
-  if rho < rho_satv:
+  psat, rho_satl, rho_satv = prho_sat(T)
+  if rho <= rho_satv:
     # Saturated vapour
     return 1.0
-  elif rho_satv <= rho and rho <= rho_satl:
+  elif rho_satv < rho and rho < rho_satl:
     # Mixture
     return (rho - rho_satl)/(rho_satv - rho_satl)
   else:
@@ -212,7 +234,7 @@ def print_verification_values():
         f"{tup[2]} | " +
         f"{tup[3]:{'.9f' if tup[3] < 0 else ' .9f'}}")
   
-  print("Test case 1: rho = 838.025 kg m^{-3},,T = 500 K")
+  print("Test case 1: rho = 838.025 kg m^{-3}, T = 500 K")
   rho = 838.025
   T = 500
   # Evaluate results using this implementation
@@ -277,6 +299,14 @@ def print_timing():
   print(f"Number of coefficients in model: {num_coeffs}")
   print(f"Relative load per model dof:     " +
         f"{(t2-t1)/(t2_ideal-t1_ideal)/num_coeffs:.3f}x")
+
+def get_saturation_density_curves(range_T=None):
+  ''' Returns saturation density curves rho_satl(T), rho_satv(T). '''
+  if range_T is None:
+    range_T = np.linspace(273.15, Tc, 60)
+  # Sample saturation curve
+  range_rho_l, range_rho_v = zip(*[prho_sat(T)[1:3] for T in range_T])
+  return np.array(range_rho_l), np.array(range_rho_v)
 
 ''' Ideal-gas part of dimensionless Helmholtz function and its derivatives. '''
   
