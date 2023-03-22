@@ -60,14 +60,31 @@ beta_res55_56 = np.array([float(obj["beta_i"]) for obj in residual2_arraydict])
 ''' Set up static parameters '''
 Tc = 647.096  # K
 rhoc = 322    # kg / m^3
-R = 0.46151805 # kJ / kg K
+R = 0.46151805 * 1e3 # J / kg K
 # Generic precomputation
 _exp1_55_56 = 0.5 / (beta_res55_56)
 
+''' Function dispatch utilities. '''
 
-''' Verification utilities. '''
+def autocast(f):
+  ''' Wrapper for functions in two arguments to take type float or np.array. '''
+  def wrapped(rho, T):
+    rho = np.array(rho)
+    T = np.array(T)
+    if rho.shape != T.shape:
+      raise ValueError("Dimensions of rho, T do not match.")
+    if len(rho.shape) == 0:
+      # Pad and return to scalar
+      return float(f(np.expand_dims(rho, axis=-1), np.expand_dims(T, axis=-1)))
+    elif rho.shape[-1] != 1:
+      # Add axis and squeeze out
+      return f(np.expand_dims(rho, axis=-1),
+        np.expand_dims(T, axis=-1)).squeeze(axis=-1)
+    else:
+      return f(rho, T)
+  return wrapped
 
-def dispatch(functions, rho, T):
+def dispatch_vec(functions, rho, T):
   ''' Wraps and dispatches an iterable collection functions. ''' 
   # Reciprocal reduced volume
   d = np.array(rho / rhoc)
@@ -87,7 +104,41 @@ def dispatch(functions, rho, T):
   else:
     return [f(d,t) for f in functions]
 
-def get_verification_values():
+''' Vectorized thermodynamic functions in (rho, T) space. '''
+
+@autocast
+def Z(rho:np.array, T:np.array):
+  # Reciprocal reduced volume and temperature
+  d, t = np.array(rho / rhoc), np.array(Tc / T)
+  return 1.0 + d * phir_d(d, t)
+
+@autocast
+def p(rho:np.array, T:np.array):
+  # Reciprocal reduced volume and temperature
+  d, t = np.array(rho / rhoc), np.array(Tc / T)
+  return rho * R * T * (1.0 + d * phir_d(d, t))
+
+''' Scalar thermodynamic functions. ''' 
+def rho_pt(p:float, T:float):
+  ''' Density evaluation using Newton's method. '''
+  t = Tc / T
+  damping_factor = 1.0
+  d = 2.0
+  for i in range(16):
+    # Cache value
+    _phir_d = phir_d(d, t)
+    # Evaluate residual value, derivative
+    val = -p / (rhoc * R * T) + d * (1.0 + d * _phir_d)
+    deriv = 1.0 + d * (2.0 * _phir_d + d * phir_dd(d, t))
+    # Take Newton step
+    d -= damping_factor * val / deriv
+    print(val, deriv, d)
+  print(d * rhoc * R * T * (1.0 + d * _phir_d), T)
+  return d * rhoc
+
+''' Verification utilities. '''
+
+def print_verification_values():
   ''' Prints verification values (p. 436 of Wagner and Pruss)'''
   names0 = ["phi0   ", "phi0_d ", "phi0_dd", "phi0_t ", "phi0_tt", "phi0_dt"]
   namesr = ["phir   ", "phir_d ", "phir_dd", "phir_t ", "phir_tt", "phir_dt"]
@@ -105,8 +156,10 @@ def get_verification_values():
   rho = 838.025
   T = 500
   # Evaluate results using this implementation
-  results0 = dispatch([phi0, phi0_d, phi0_dd, phi0_t, phi0_tt, phi0_dt], rho, T)
-  resultsr = dispatch([phir, phir_d, phir_dd, phir_t, phir_tt, phir_dt], rho, T)
+  results0 = dispatch_vec([
+    phi0, phi0_d, phi0_dd, phi0_t, phi0_tt, phi0_dt], rho, T)
+  resultsr = dispatch_vec([
+    phir, phir_d, phir_dd, phir_t, phir_tt, phir_dt], rho, T)
   # Print results
   print("Computed: ")
   print_table(results0, resultsr)
@@ -122,8 +175,10 @@ def get_verification_values():
   rho = 358
   T = 647
   # Evaluate results using this implementation
-  results0 = dispatch([phi0, phi0_d, phi0_dd, phi0_t, phi0_tt, phi0_dt], rho, T)
-  resultsr = dispatch([phir, phir_d, phir_dd, phir_t, phir_tt, phir_dt], rho, T)
+  results0 = dispatch_vec([
+    phi0, phi0_d, phi0_dd, phi0_t, phi0_tt, phi0_dt], rho, T)
+  resultsr = dispatch_vec([
+    phir, phir_d, phir_dd, phir_t, phir_tt, phir_dt], rho, T)
   # Print results
   print("Computed: ")
   print_table(results0, resultsr)
@@ -134,7 +189,7 @@ def get_verification_values():
     -0.321_722_501e1, -0.996_029_507e1, -0.133_214_720e1]
   print_table(ref0, refr)
 
-def get_timing():
+def print_timing():
   ''' Prints timing values as compared to ideal gas computations. '''
   print(f"Timing p(rho, T) calculations for scalar input.")
   rho = 358
@@ -145,7 +200,7 @@ def get_timing():
   for i in range(N_timing):
     d = rho / rhoc
     t = Tc / T
-    p = 1.0 + d * phir(d, t) * rho * R * T
+    p = (1.0 + d * phir(d, t)) * rho * R * T
   t2 = perf_counter()
 
   t1_ideal = perf_counter()
@@ -219,17 +274,17 @@ def phir(d:np.array, t:np.array) -> np.array:
   theta = (1 - t) + A_res55_56 * d_quad ** _exp1_55_56
   Delta = theta**2 + B_res55_56 * d_quad ** a_res55_56
   # Factor in Delta**b_i term for 1-indices from 55 to 56
-  coeffs[54:56] *= Delta ** b_res55_56
+  coeffs[...,54:56] *= Delta ** b_res55_56
   
   # Allocate exponent cache
   exponents = np.zeros_like(coeffs)
   # Compute exponents for 1-indices 8 to 51 as -d**c_i
-  exponents[7:51] = -d ** c_res1_51[7:51]
+  exponents[...,7:51] = -d ** c_res1_51[7:51]
   # Compute exponents for 1-indices from 52 to 54
-  exponents[51:54] = -alpha_res52_54 * (d - eps_res52_54) ** 2 \
+  exponents[...,51:54] = -alpha_res52_54 * (d - eps_res52_54) ** 2 \
     -beta_res52_54*(t - gamma_res52_54)**2
   # Compute exponents for 1-indices from 55 to 56
-  exponents[54:56] = -C_res55_56 * d_quad \
+  exponents[...,54:56] = -C_res55_56 * d_quad \
     -D_res55_56*(t - 1)**2
 
   return np.expand_dims(np.einsum("...i, ...i -> ...",
@@ -244,32 +299,32 @@ def phir_d(d:np.array, t:np.array) -> np.array:
   # Allocate and partially evaluate coeffs
   coeffs = n_res * (d ** (d_res-1.0)) * (t ** t_res)
   # Factor in d_i - c_i * d**c_i term
-  coeffs[0:51] *= (d_res[0:51] - c_res1_51 * d ** c_res1_51)
-  coeffs[51:54] *= d_res[51:54] - 2.0 * alpha_res52_54 * d * (d - eps_res52_54)
+  coeffs[...,0:51] *= (d_res[0:51] - c_res1_51 * d ** c_res1_51)
+  coeffs[...,51:54] *= d_res[51:54] - 2.0 * alpha_res52_54 * d * (d - eps_res52_54)
   # Compute distance term for 1-indices 55 to 56
   theta = (1 - t) + A_res55_56 * d_quad ** _exp1_55_56
   Delta = theta**2 + B_res55_56 * d_quad ** a_res55_56
   # Factor in other terms for 1-indices from 55 to 56 in two steps
-  coeffs[54:56] *= (
+  coeffs[...,54:56] *= (
     Delta * (1.0 - 2.0 * C_res55_56 * (d-1.0) * d)
     + b_res55_56 * d * (d-1.0) * (
       A_res55_56 * theta * 2 / beta_res55_56 * d_quad**(_exp1_55_56 - 1.0)
       + 2 * B_res55_56 * a_res55_56 * d_quad**(a_res55_56 - 1.0)
     )
   )
-  coeffs[54:56] *= Delta ** np.where(Delta != 0, b_res55_56-1, 1.0)
+  coeffs[...,54:56] *= Delta ** np.where(Delta != 0, b_res55_56-1, 1.0)
 
   # Allocate exponent cache
   exponents = np.zeros_like(coeffs)
   # Compute exponents for 1-indices 8 to 51 as -d**c_i
-  exponents[7:51] = -d ** c_res1_51[7:51]
+  exponents[...,7:51] = -d ** c_res1_51[7:51]
   # Compute exponents for 1-indices from 52 to 54
-  exponents[51:54] = -alpha_res52_54 * (d - eps_res52_54) ** 2 \
+  exponents[...,51:54] = -alpha_res52_54 * (d - eps_res52_54) ** 2 \
     -beta_res52_54*(t - gamma_res52_54)**2
   # Compute exponents for 1-indices from 55 to 56
-  exponents[54:56] = -C_res55_56 * d_quad \
+  exponents[...,54:56] = -C_res55_56 * d_quad \
     -D_res55_56*(t - 1)**2
-
+  # print(coeffs * np.exp(exponents))
   return np.expand_dims(np.einsum("...i, ...i -> ...",
     coeffs, np.exp(exponents)), axis=-1)
 
