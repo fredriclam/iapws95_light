@@ -3,6 +3,7 @@
 
 import csv
 import numpy as np
+import scipy.optimize
 from time import perf_counter
 
 ''' Module-level data loading ''' 
@@ -56,6 +57,16 @@ C_res55_56 = np.array([float(obj["C_i"]) for obj in residual2_arraydict])
 D_res55_56 = np.array([float(obj["D_i"]) for obj in residual2_arraydict])
 A_res55_56 = np.array([float(obj["A_i"]) for obj in residual2_arraydict])
 beta_res55_56 = np.array([float(obj["beta_i"]) for obj in residual2_arraydict])
+
+''' Set up Saul and Wagner 1987 saturation curve estimates '''
+# Saturated liquid density correlation (Eq. 2.3)
+_powsb = np.array([1/3, 2/3, 5/3, 16/3, 43/3, 110/3])
+_coeffsb = [1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
+d_satl = lambda t: 1.0 + np.dot((1.0-1.0/t)**_powsb, _coeffsb)
+# Saturated vapour density correlation (Eq. 2.2)
+_powsc = np.array([1/3, 2/3, 4/3, 9/3, 37/6, 71/6])
+_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151, -44.6384, -64.3486]
+d_satv = lambda t: np.exp(np.dot((1.0-1.0/t)**_powsc, _coeffsc))
 
 ''' Set up static parameters '''
 Tc = 647.096  # K
@@ -119,22 +130,71 @@ def p(rho:np.array, T:np.array):
   return rho * R * T * (1.0 + d * phir_d(d, t))
 
 ''' Scalar thermodynamic functions. ''' 
-def rho_pt(p:float, T:float):
+def rho_pt(p:float, T:float, newton_rtol=1e-9, max_steps=16):
   ''' Density evaluation using Newton's method. '''
   t = Tc / T
   damping_factor = 1.0
-  d = 2.0
-  for i in range(16):
+  # Determine initial value
+  psat, rho_satl, rho_satv = saturation_curve(T)
+  
+  if p > psat:
+    d = rho_satl / rhoc
+  elif p < psat:
+    d = rho_satv / rhoc
+  else:
+    raise ValueError("Saturation state entered; density is ambiguous.")
+
+  # Fixed Newton's method
+  for i in range(max_steps):
     # Cache value
     _phir_d = phir_d(d, t)
     # Evaluate residual value, derivative
     val = -p / (rhoc * R * T) + d * (1.0 + d * _phir_d)
     deriv = 1.0 + d * (2.0 * _phir_d + d * phir_dd(d, t))
     # Take Newton step
-    d -= damping_factor * val / deriv
-    print(val, deriv, d)
-  print(d * rhoc * R * T * (1.0 + d * _phir_d), T)
+    step = -damping_factor * val / deriv
+    d += step
+    if np.abs(step/d) < newton_rtol:
+      break
   return d * rhoc
+
+def saturation_curve(T):
+  ''' Returns isothermal saturation curve properties as tuple
+  (psat, rho_satl, rho_satv). Solves the Maxwell construction (see e.g. P.
+  Junglas). '''
+  # Compute reciprocal reduced temperature
+  t = Tc / T
+  # Define size-2 system for Maxwell construction for phase transition at T
+  phir_d = lambda d: phir_d(d, t)
+  phir = lambda d: phir(d, t)
+  phi0 = lambda d: phi0(d, t)
+  eq1 = lambda d1, d2: d2 * phir_d(d2) - d1 * phir_d(d1) - phir(d1) - phi0(d1) +phir(d2) + phi0(d2)
+  eq2 = lambda d1, d2: d1 + d1**2 * phir_d(d1) - d2 - d2**2 * phir_d(d2)
+  eqvec = lambda d: np.array([eq1(d[0], d[1]), eq2(d[0], d[1])]).squeeze()
+
+  # Solve system using fsolve, initial guess using older sat curve correlations
+  d_init = np.array([d_satl(t), d_satv(t)])
+  d_final = scipy.optimize.fsolve(eqvec, d_init)
+
+  # Get saturation densities at given T
+  rho_satl, rho_satv = d_final * rhoc
+  # Compute saturation pressure (use either d_final[0] or d_final[1])
+  psat = d_final[0]*(1.0 + d_final[0]*phir_d(d_final[0], t)) \
+    * rhoc * R * T
+  return psat, rho_satl, rho_satv
+
+def x(rho, T):
+  ''' Vapour mass fraction (steam quality). '''
+  psat, rho_satl, rho_satv = saturation_curve(T)
+  if rho < rho_satv:
+    # Saturated vapour
+    return 1.0
+  elif rho_satv <= rho and rho <= rho_satl:
+    # Mixture
+    return (rho - rho_satl)/(rho_satv - rho_satl)
+  else:
+    # Saturated liquid
+    return 0.0
 
 ''' Verification utilities. '''
 
