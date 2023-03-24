@@ -31,8 +31,8 @@ rhom_max = (1 + (p_max - p_m0) / K) * rho_m0
 rhow_min = p_min / (Rw * T_max)
 rhom_min = (1 + (0.0 - p_m0) / K) * rho_m0
 # Define feasible range
-range_rho_mix_coords = np.linspace(0, 1, 23)
-range_yw = np.linspace(0.01, 0.99, 33)
+range_rho_mix_coords = np.linspace(0, 1, 12)
+range_yw = np.linspace(0.01, 0.99, 16)
 # Generate meshgrid of rho_mix, yw coordinates covering feasible range
 mg_rho_mix, mg_yw = np.meshgrid(range_rho_mix_coords , range_yw)
 for i, j in np.ndindex(mg_rho_mix.shape):
