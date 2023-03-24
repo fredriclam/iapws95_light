@@ -205,21 +205,45 @@ def prho_sat(T):
     _cache_phir_dd0 = _phir_dd(d[0])
     _cache_phir_dd1 = _phir_dd(d[1])
     return np.array(
-      [[-2 * _cache_phir_d0 - d[0] * _cache_phir_dd0 - _phi0_d(d[0]),
-        2 * _cache_phir_d1 + d[1] * _cache_phir_dd1 + _phi0_d(d[1])],
-      [1 + 2*d[0] * _cache_phir_d0 + d[0]**2 * _cache_phir_dd0,
-        -1 - 2*d[1] * _cache_phir_d1 - d[1]**2 * _cache_phir_dd1]])
+      [[-2.0 * _cache_phir_d0 - d[0] * _cache_phir_dd0 - _phi0_d(d[0]),
+        2.0 * _cache_phir_d1 + d[1] * _cache_phir_dd1 + _phi0_d(d[1])],
+      [1.0 + 2.0*d[0] * _cache_phir_d0 + d[0]**2 * _cache_phir_dd0,
+        -1.0 - 2.0*d[1] * _cache_phir_d1 - d[1]**2 * _cache_phir_dd1]])
 
   # Solve system using fsolve, initial guess using older sat curve correlations
   d_init = np.array([float(d_satl(t)), float(d_satv(t))])
-  d_final = scipy.optimize.fsolve(eqvec, d_init, fprime=jac)
-  # print(d_final)
-  # raise Exception
+  # d_vec = scipy.optimize.fsolve(eqvec, d_init, fprime=jac)
+
+  # Two-step Newton
+  def newton_step(d):
+    ''' Compute Newton step. '''
+    _cache_phir_d0 = _phir_d(d[0])
+    _cache_phir_d1 = _phir_d(d[1])
+    _cache_phir_dd0 = _phir_dd(d[0])
+    _cache_phir_dd1 = _phir_dd(d[1])
+    f = np.array([d[1] * _cache_phir_d1 - d[0] * _cache_phir_d0 \
+      - _phir(d[0]) - _phi0(d[0]) + _phir(d[1]) + _phi0(d[1]),
+      d[0] + d[0]**2 * _cache_phir_d0 - d[1] - d[1]**2 * _cache_phir_d1])
+    J = np.array(
+      [[-2.0 * _cache_phir_d0 - d[0] * _cache_phir_dd0 - _phi0_d(d[0]),
+        2.0 * _cache_phir_d1 + d[1] * _cache_phir_dd1 + _phi0_d(d[1])],
+      [1.0 + 2.0*d[0] * _cache_phir_d0 + d[0]**2 * _cache_phir_dd0,
+        -1.0 - 2.0*d[1] * _cache_phir_d1 - d[1]**2 * _cache_phir_dd1]])
+    detJ = J[0,0] * J[1,1] - J[0,1] * J[1,0]
+    # Update d with -J^{-1} f
+    return -np.array([J[1,1] * f[0] - J[0,1] * f[1],
+      -J[1,0] * f[0] + J[0,0] * f[1]]) / detJ
+
+  d_vec = d_init
+  d_vec += newton_step(d_vec)
+  final_step = newton_step(d_vec)
+  # print(np.linalg.norm(final_step))
+  d_vec += final_step
 
   # Get saturation densities at given T
-  rho_satl, rho_satv = d_final * rhoc
+  rho_satl, rho_satv = d_vec * rhoc
   # Compute saturation pressure (use either d_final[0] or d_final[1])
-  psat = d_final[0]*(1.0 + d_final[0]*_phir_d(d_final[0])) \
+  psat = d_vec[0]*(1.0 + d_vec[0]*_phir_d(d_vec[0])) \
     * rhoc * R * T
   return np.array([psat]), rho_satl, rho_satv
 
