@@ -186,24 +186,42 @@ def prho_sat(T):
     return None, None, None
 
   # Define size-2 system for Maxwell construction for phase transition at T
-  _phir_d = lambda d: phir_d(d, t)
-  _phir = lambda d: phir(d, t)
-  _phi0 = lambda d: phi0(d, t)
+  _phir_d = lambda d: float(phir_d(d, t))
+  _phir = lambda d: float(phir(d, t))
+  _phi0 = lambda d: float(phi0(d, t))
   eq1 = lambda d1, d2: d2 * _phir_d(d2) - d1 * _phir_d(d1) \
     - _phir(d1) - _phi0(d1) + _phir(d2) + _phi0(d2)
   eq2 = lambda d1, d2: d1 + d1**2 * _phir_d(d1) - d2 - d2**2 * _phir_d(d2)
-  eqvec = lambda d: np.array([eq1(d[0], d[1]), eq2(d[0], d[1])]).squeeze()
+  eqvec = lambda d: np.array([eq1(d[0], d[1]), eq2(d[0], d[1])])
+
+  # Jacobian
+  # [ -2 phir_d(d1) - d1 * phir_dd(d1) - phi0_d(d1),  + for d2 ]
+  # [  1 + 2*d1 * phir_d(d1) + d1**2 * phir_dd(d1),  - for d2 ]
+  _phir_dd = lambda d: float(phir_dd(d, t))
+  _phi0_d = lambda d: float(phi0_d(d, t))
+  def jac(d):
+    _cache_phir_d0 = _phir_d(d[0])
+    _cache_phir_d1 = _phir_d(d[1])
+    _cache_phir_dd0 = _phir_dd(d[0])
+    _cache_phir_dd1 = _phir_dd(d[1])
+    return np.array(
+      [[-2 * _cache_phir_d0 - d[0] * _cache_phir_dd0 - _phi0_d(d[0]),
+        2 * _cache_phir_d1 + d[1] * _cache_phir_dd1 + _phi0_d(d[1])],
+      [1 + 2*d[0] * _cache_phir_d0 + d[0]**2 * _cache_phir_dd0,
+        -1 - 2*d[1] * _cache_phir_d1 - d[1]**2 * _cache_phir_dd1]])
 
   # Solve system using fsolve, initial guess using older sat curve correlations
-  d_init = np.array([d_satl(t), d_satv(t)])
-  d_final = scipy.optimize.fsolve(eqvec, d_init)
+  d_init = np.array([float(d_satl(t)), float(d_satv(t))])
+  d_final = scipy.optimize.fsolve(eqvec, d_init, fprime=jac)
+  # print(d_final)
+  # raise Exception
 
   # Get saturation densities at given T
   rho_satl, rho_satv = d_final * rhoc
   # Compute saturation pressure (use either d_final[0] or d_final[1])
   psat = d_final[0]*(1.0 + d_final[0]*_phir_d(d_final[0])) \
     * rhoc * R * T
-  return psat, rho_satl, rho_satv
+  return np.array([psat]), rho_satl, rho_satv
 
 def x(rho, T):
   ''' Vapour mass fraction (steam quality). '''
