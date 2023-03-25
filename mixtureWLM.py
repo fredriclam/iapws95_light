@@ -6,6 +6,12 @@ WLM equation of state
 import iapws95_light
 import numpy as np
 
+try:
+  import float_phi_functions
+except ModuleNotFoundError:
+  print("Cython module for scalar phi computations not found. Defaulting to " +
+    "native python implementation. " )
+
 # Material parameters
 K = 10e9
 p_m0 = 5e6
