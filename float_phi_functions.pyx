@@ -369,7 +369,7 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   cdef DTYPE_t _c1
   cdef DTYPE_t _c2
   cdef DTYPE_t _c_coeff
-  cdef DTYPE_t _temp
+  cdef DTYPE_t _common
 
   # Use strides as below
   # cdef n_coeff ndt1_51[3*i]
@@ -379,10 +379,10 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   # Compute uniform coefficients with mixed coefficients ndt (1-indices 1 to 51)
   cdef unsigned short i
   for i in range(7):
-    _temp = ndt1_51[3*i] * ndt1_51[3*i+1] \
+    _common = ndt1_51[3*i] * ndt1_51[3*i+1] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2])
-    out_phir_d += _temp
-    out_phir_dd += _temp * (ndt1_51[3*i+1] - 1.0) / d
+    out_phir_d += _common
+    out_phir_dd += _common * (ndt1_51[3*i+1] - 1.0) / d
   # Integer c_coeff optimization: use c as
   #   range(7,22) -> 1
   #   range(22,42) -> 2
@@ -394,30 +394,30 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   _c2 = exp(_c1)
   _c_coeff = 1.0
   for i in range(7,22):
-    _temp = ndt1_51[3*i] \
+    _common = ndt1_51[3*i] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _temp * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _temp * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
         * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
         + _c_coeff * _c_coeff * _c1 ) / d
   _c1 = -d * d
   _c2 = exp(_c1)
   _c_coeff = 2.0
   for i in range(22,42):
-    _temp = ndt1_51[3*i] \
+    _common = ndt1_51[3*i] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _temp * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _temp * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
         * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
         + _c_coeff * _c_coeff * _c1 ) / d
   _c1 = -d * d * d
   _c2 = exp(_c1)
   _c_coeff = 3.0
   for i in range(42,46):
-    _temp = ndt1_51[3*i] \
+    _common = ndt1_51[3*i] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _temp * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _temp * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
         * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
         + _c_coeff * _c_coeff * _c1 ) / d
   _c1 = d * d
@@ -425,10 +425,10 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   _c2 = exp(_c1)
   _c_coeff = 4.0
   for i in range(46,47):
-    _temp = ndt1_51[3*i] \
+    _common = ndt1_51[3*i] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _temp * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _temp * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
         * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
         + _c_coeff * _c_coeff * _c1 ) / d
   _c1 = d * d * d
@@ -436,21 +436,21 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   _c2 = exp(_c1)
   _c_coeff = 6.0
   for i in range(47,51):
-    _temp = ndt1_51[3*i] \
+    _common = ndt1_51[3*i] \
       * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _temp * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _temp * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
         * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
         + _c_coeff * _c_coeff * _c1 ) / d
   
   # One-loop form of range(7,51) (approx. 40% more load)
   # for i in range(7, 51):
   #   _c1 = -d ** ndtc1_51[4*i+3]
-  #   _temp = ndtc1_51[4*i] \
+  #   _common = ndtc1_51[4*i] \
   #     * (d ** (ndtc1_51[4*i+1]-1.0)) * (t ** ndtc1_51[4*i+2]) \
   #     * exp(_c1)
-  #   out_phir_d += _temp * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1)
-  #   out_phir_dd += _temp * ((ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1) \
+  #   out_phir_d += _common * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1)
+  #   out_phir_dd += _common * ((ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1) \
   #       * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1 - 1.0) \
   #       + ndtc1_51[4*i+3] * ndtc1_51[4*i+3] * _c1 ) / d
 
@@ -466,15 +466,15 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     # Compute commons
     _c1 = d - eps_res52_54[i-51]
     _c2 = t - gamma_res52_54[i-51]
-    _temp = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
+    _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
       -beta_res52_54[i-51] * _c2 * _c2) \
       * (d * d # d ** (d_res[i]-1.0)
         ) * (t ** t_res[i])
     # Compute phir_d term
-    out_phir_d += _temp * (d_res[i] \
+    out_phir_d += _common * (d_res[i] \
       - 2.0 * alpha_res52_54[i-51] * d * _c1)
     # Compute phir_dd term
-    out_phir_dd += _temp * d * (-2.0 * alpha_res52_54[i-51]
+    out_phir_dd += _common * d * (-2.0 * alpha_res52_54[i-51]
       + 4.0 * alpha_res52_54[i-51] * alpha_res52_54[i-51]
         * _c1 * _c1
       - 4.0 * d_res[i] * alpha_res52_54[i-51] / d * _c1
@@ -486,49 +486,45 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     _c2 = d_quad ** (a_res55_56[i-54] - 1.0)
     _theta = (1.0 - t) + A_res55_56[i-54] * _c1 * d_quad
     _Delta = _theta*_theta + B_res55_56[i-54] * _c2 * d_quad
-    _temp = exp(-C_res55_56[i-54] * d_quad \
+    _common = n_res[i] * exp(-C_res55_56[i-54] * d_quad \
       - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      _common = 0.0
 
     # Compute phir_d term
-    _c3 = n_res[i] * (t ** t_res[i]) * (
+    _c3 = (
       _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
       + b_res55_56[i-54] * d * (d-1.0) * (
         A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
-        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54]
-        * _c2
+        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2
       )
-    )
-    # Replace limiting value if Delta == 0
-    if _Delta != 0.0:
-      _c3 *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
-    else:
-      _c3 = 0.0
-    out_phir_d += _c3 * _Delta * _temp
+    )    
+    out_phir_d += _c3 * _Delta * _common
 
     # Compute phir_dd term
     # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
     _dDelta_div = (A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
       + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2)
-    _c4 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1
-    if d_quad != 0.0:
-      _c1 /= d_quad
-    else:
-      _c1 = 0.0
-    # Replace limiting value if Delta == 0
+    # Compute second derivative of Delta
+    _c3 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1
     _ddDelta = _dDelta_div + (
       4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0) * _c2
-      + 2.0 * _c4 * _c4 * d_quad
+      + 2.0 * _c3 * _c3 * d_quad
       + 4.0 * _theta * A_res55_56[i-54] / beta_res55_56[i-54] \
-        * (_exp1_55_56[i-54] - 1.0) * _c1 * d_quad
+        * (_exp1_55_56[i-54] - 1.0) * _c1
     )
     # Finish d(Delta)/d(delta) computation in-place
     _dDelta_div *= d - 1.0
+    # Compute coefficient to phir_dd
     _c1 = _Delta*_Delta * (-4.0 * C_res55_56[i-54] * (d-1.0) 
       + d * (2.0*C_res55_56[i-54]*d_quad - 1.0) * 2.0 * C_res55_56[i-54])
     _c1 += _Delta * 2.0 * b_res55_56[i-54] * _dDelta_div \
       * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
     _c1 += b_res55_56[i-54] * (_Delta * _ddDelta
       + (b_res55_56[i-54] - 1.0) * _dDelta_div * _dDelta_div) * d
-    out_phir_dd += _c1 * n_res[i] * _c3 * _temp
+    out_phir_dd += _c1 * _common
 
   return out_phir_d, out_phir_dd

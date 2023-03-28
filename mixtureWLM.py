@@ -6,11 +6,14 @@ WLM equation of state
 import iapws95_light
 import numpy as np
 
+# Set backend for phi computation
+backend = iapws95_light
 try:
   import float_phi_functions
+  backend = float_phi_functions
 except ModuleNotFoundError:
   print("Cython module for scalar phi computations not found. Defaulting to " +
-    "native python implementation. " )
+    "python implementation. " )
 
 # Material parameters
 K = 10e9
@@ -37,8 +40,8 @@ rhom_max = (1 + (p_max - p_m0) / K) * rho_m0
 rhow_min = p_min / (Rw * T_max)
 rhom_min = (1 + (0.0 - p_m0) / K) * rho_m0
 # Define feasible range
-range_rho_mix_coords = np.linspace(0, 1, 12)
-range_yw = np.linspace(0.01, 0.99, 16)
+range_rho_mix_coords = np.linspace(0, 1, 64)
+range_yw = np.linspace(0.01, 0.99, 96)
 # Generate meshgrid of rho_mix, yw coordinates covering feasible range
 mg_rho_mix, mg_yw = np.meshgrid(range_rho_mix_coords , range_yw)
 for i, j in np.ndindex(mg_rho_mix.shape):
@@ -48,7 +51,7 @@ for i, j in np.ndindex(mg_rho_mix.shape):
   mg_rho_mix[i,j] = rho_mix_min + range_rho_mix_coords[j] * (
     1/(yw / rhow_max +  ym / rhom_max) - rho_mix_min)
 
-def _itersolve_d(rho_mix, yw, T, d_init=1.0):
+def _itersolve_d(rho_mix, yw, T, d_init=1.0) -> float:
   ''' Solve for reduced density d = rho/rho_c using Newton's method. '''
   # Compute dependent variables
   ym = 1.0 - yw
@@ -61,14 +64,13 @@ def _itersolve_d(rho_mix, yw, T, d_init=1.0):
   c1 = (v_mix * (K - p_m0) - K * ym * v_m0)/(Rw * T) - yw
   c0 = -yw * vc / (Rw * T) * (K - p_m0)
 
-  def scaled_pressure_difference(d):
+  def scaled_pressure_difference(d:float) -> float:
     ''' Return value of scaled pressure difference '''
-    return (a*d + b)*d**2*iapws95_light.phir_d(d, t) + ((c2 * d) + c1)*d + c0
+    return (a*d + b)*d**2*backend.phir_d(d, t) + ((c2 * d) + c1)*d + c0
 
-  def residual_and_slope(d):
+  def residual_and_slope(d:float) -> float:
     ''' Return value of scaled pressure difference and slope '''
-    phir_d = iapws95_light.phir_d(d, t)
-    phir_dd = iapws95_light.phir_dd(d,t)
+    phir_d, phir_dd = backend.fused_phir_d_phir_dd(d, t)
     val = (a*d + b)*d**2*phir_d + ((c2 * d) + c1)*d + c0
     slope = (3*a*d + 2*b)*d*phir_d \
       + (a*d + b)*d**2*phir_dd \
@@ -83,12 +85,12 @@ def _itersolve_d(rho_mix, yw, T, d_init=1.0):
   for i in range(max_newton_iters):
     # Compute Newton step
     val, slope = residual_and_slope(d)
-    step = val/slope
+    step = -val/slope
     # Check rtol
-    if np.any(np.abs(step / d) < newton_rtol) and d > 0.0:
+    if (step / d) * (step / d) < newton_rtol*newton_rtol and d > 0.0:
       success = True
     # Take step
-    d -= step
+    d += step
     if success:
       break
   if success:
@@ -113,7 +115,7 @@ def _itersolve_d(rho_mix, yw, T, d_init=1.0):
       f"d={d}, step={step}, rho_mix={rho_mix}, ym={ym}, yw={yw}, t={t}")
   return d, np.abs(step)
 
-def solve_rhow(rho_mix, yw, T):
+def solve_rhow(rho_mix:float, yw:float, T:float) -> float:
   ''' Solve for water density. '''
   d_init = 1.0
   if T < iapws95_light.Tc:
@@ -133,5 +135,6 @@ def solve_rhow(rho_mix, yw, T):
     else:
       # Liquid phase
       d_init = rhol / rhoc
+  # Iteratively solve for water reduced volume d
   d, absstep = _itersolve_d(rho_mix, yw, T, d_init=d_init)
   return d * rhoc

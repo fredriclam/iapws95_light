@@ -656,3 +656,9 @@ def phir_dt(d:np.array, t:np.array) -> np.array:
   # Reduce
   return np.expand_dims(np.einsum("...i, ...i -> ...",
     coeffs, np.exp(exponents)), axis=-1)
+
+def fused_phir_d_phir_dd(d:float, t:float) -> float:
+  ''' Interface for consistent syntax with Cython backend. '''
+  d = np.array([d])
+  t = np.array([t])
+  return phir_d(d, t).ravel()[0], phir_dd(d, t).ravel()[0]
