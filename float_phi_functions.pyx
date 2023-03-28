@@ -1,3 +1,11 @@
+
+
+''' # For cython timing: place at top
+# cython: binding=True
+# cython: linetrace=True
+# cython: profile=True
+# distutils: define_macros=CYTHON_TRACE_NOGIL=1'''
+
 ctypedef double DTYPE_t
 cimport cython
 
@@ -106,6 +114,13 @@ cdef DTYPE_t[204] ndtc1_51 = [
        -1.99057184e-01,  6.00000000e+00,  4.40000000e+01,  6.00000000e+00,
         3.17774973e-01,  6.00000000e+00,  4.60000000e+01,  6.00000000e+00,
        -1.18411824e-01,  6.00000000e+00,  5.00000000e+01,  6.00000000e+00]
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def _dummy(DTYPE_t d, DTYPE_t t):
+  return d
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -290,10 +305,11 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   Cython implementation for float input.
   '''
 
-  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
-  cdef DTYPE_t _neg_dpowc
   cdef DTYPE_t out_phir_d = 0.0
   cdef DTYPE_t out_phir_dd = 0.0
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  # Declare temporary registers
+  cdef DTYPE_t _neg_dpowc
   cdef DTYPE_t _temp
 
   # Use strides as below
@@ -319,7 +335,7 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
         * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _neg_dpowc - 1.0) \
         + ndtc1_51[4*i+3] * ndtc1_51[4*i+3] * _neg_dpowc ) / d
 
-  # Compute pre-exponential coefficients
+  # Declare temporary registers
   cdef DTYPE_t _c1
   cdef DTYPE_t _c2
   cdef DTYPE_t _theta
@@ -348,6 +364,8 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     # Compute commons
     _theta = (1.0 - t) + A_res55_56[i-54] * d_quad ** _exp1_55_56[i-54]
     _Delta = _theta*_theta + B_res55_56[i-54] * d_quad ** a_res55_56[i-54]
+    _temp = exp(-C_res55_56[i-54] * d_quad \
+      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
 
     # Compute phir_d
     _c1 = n_res[i] * (d ** (d_res[i]-1.0)) * (t ** t_res[i])
@@ -360,28 +378,25 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
         * d_quad**(a_res55_56[i-54] - 1.0)
       )
     )
-    if _Delta != 0:
-      _Delta = _Delta ** (b_res55_56[i-54]-1.0)
-    _c1 *= _Delta
-    out_phir_d += _c1 * exp(-C_res55_56[i-54] * d_quad \
-      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    if _Delta != 0.0:
+      _c1 *= _Delta ** (b_res55_56[i-54]-1.0)
+    else:
+      _c1 = 0.0
+    out_phir_d += _c1 * _temp
 
     # Compute phir_dd
-    # refresh
-    _Delta = _theta*_theta + B_res55_56[i-54] * d_quad ** a_res55_56[i-54]
     # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
     _dDelta_div = A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] \
         * d_quad**(_exp1_55_56[i-54] - 1.0) \
       + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] \
         * d_quad**(a_res55_56[i-54] - 1.0)
-    # Reuse register
     if d_quad != 0.0:
       _c1 = d_quad ** (_exp1_55_56[i-54] - 2.0)
     else:
       _c1 = 0.0
     _c2 = A_res55_56[i-54] / beta_res55_56[i-54] \
       * d_quad**(_exp1_55_56[i-54] - 1.0)
-    _ddDelta = _dDelta_div + ((d-1.0)**2) * (
+    _ddDelta = _dDelta_div + ((d-1.0)*(d-1.0)) * (
       4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0)
         * d_quad**(a_res55_56[i-54] - 2.0)
       + 2.0 * _c2*_c2
@@ -404,7 +419,6 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     else:
       _c2 = 0.0
     _c1 *= n_res[i] * _c2
-    out_phir_dd += _c1 * exp(-C_res55_56[i-54] * d_quad \
-      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    out_phir_dd += _c1 * _temp
 
   return out_phir_d, out_phir_dd
