@@ -1,17 +1,8 @@
-# cython: profile=True
-
-
-''' # For cython timing: place at top
-# cython: binding=True
-# cython: linetrace=True
-# cython: profile=True
-# distutils: define_macros=CYTHON_TRACE_NOGIL=1'''
-
-ctypedef double DTYPE_t
+ctypedef float DTYPE_t
 cimport cython
 
 cdef extern from "math.h":
-    double exp(double x)
+    float exp(float x)
 
 cdef DTYPE_t[2] a_res55_56 = [3.5, 3.5]
 cdef DTYPE_t[2] A_res55_56 = [0.32, 0.32]
@@ -456,7 +447,6 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
 
   # Declare temporary registers
   cdef DTYPE_t _c3
-  cdef DTYPE_t _c4
   cdef DTYPE_t _theta
   cdef DTYPE_t _Delta
   cdef DTYPE_t _dDelta_div
@@ -482,10 +472,10 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
   # Compute heterogeneous coefficients for 1-indices 55 to 56
   for i in range(54,56):
     # Compute commons
-    _c1 = d_quad ** (_exp1_55_56[i-54] - 1.0) # 5/3
-    _c2 = d_quad ** (a_res55_56[i-54] - 1.0)
-    _theta = (1.0 - t) + A_res55_56[i-54] * _c1 * d_quad
-    _Delta = _theta*_theta + B_res55_56[i-54] * _c2 * d_quad
+    _c1 = d_quad ** _exp1_55_56[i-54]
+    _c2 = d_quad ** a_res55_56[i-54]
+    _theta = (1.0 - t) + A_res55_56[i-54] * _c1
+    _Delta = _theta*_theta + B_res55_56[i-54] * _c2
     _temp = exp(-C_res55_56[i-54] * d_quad \
       - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
 
@@ -493,33 +483,35 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     _c3 = n_res[i] * (t ** t_res[i]) * (
       _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
       + b_res55_56[i-54] * d * (d-1.0) * (
-        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54]
+        * d_quad**(_exp1_55_56[i-54] - 1.0)
         + 2.0 * B_res55_56[i-54] * a_res55_56[i-54]
-        * _c2
+        * d_quad**(a_res55_56[i-54] - 1.0)
       )
     )
     # Replace limiting value if Delta == 0
     if _Delta != 0.0:
-      _c3 *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+      _c3 *= _Delta ** (b_res55_56[i-54]-1.0)
     else:
       _c3 = 0.0
-    out_phir_d += _c3 * _Delta * _temp
+    out_phir_d += _c3 * _temp
 
     # Compute phir_dd term
     # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
     _dDelta_div = (A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
-      + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2)
-    _c4 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1
+      + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2) / d_quad
+    _c3 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1 / d_quad
     if d_quad != 0.0:
-      _c1 /= d_quad
+      _c1 /= d_quad * d_quad
     else:
       _c1 = 0.0
     # Replace limiting value if Delta == 0
-    _ddDelta = _dDelta_div + (
-      4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0) * _c2
-      + 2.0 * _c4 * _c4 * d_quad
+    _ddDelta = _dDelta_div + ((d-1.0)*(d-1.0)) * (
+      4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0)
+        * _c2 / (d_quad * d_quad)
+      + 2.0 * _c3*_c3
       + 4.0 * _theta * A_res55_56[i-54] / beta_res55_56[i-54] \
-        * (_exp1_55_56[i-54] - 1.0) * _c1 * d_quad
+        * (_exp1_55_56[i-54] - 1.0) * _c1
     )
     # Finish d(Delta)/d(delta) computation in-place
     _dDelta_div *= d - 1.0
@@ -529,6 +521,11 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
       * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
     _c1 += b_res55_56[i-54] * (_Delta * _ddDelta
       + (b_res55_56[i-54] - 1.0) * _dDelta_div * _dDelta_div) * d
-    out_phir_dd += _c1 * n_res[i] * _c3 * _temp
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _c2 = _Delta ** (b_res55_56[i-54] - 2.0)
+    else:
+      _c2 = 0.0
+    out_phir_dd += _c1 * n_res[i] * _c2 * _temp
 
   return out_phir_d, out_phir_dd
