@@ -26,7 +26,6 @@ cdef DTYPE_t[51] c_res1_51 = [
   0., 0., 0., 0., 0., 0., 0., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
   1., 1., 1., 1., 1., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2.,
   2., 2., 2., 2., 2., 2., 2., 2., 3., 3., 3., 3., 4., 6., 6., 6., 6.]
-
 cdef DTYPE_t[3] c_res52_54 = [0., 0., 0.]
 cdef DTYPE_t[2] C_res55_56 = [28., 32.]
 cdef DTYPE_t[56] d_res = [
@@ -38,7 +37,6 @@ cdef DTYPE_t[56] d_res = [
 cdef DTYPE_t[2] D_res55_56 = [700., 800.]
 cdef DTYPE_t[3] eps_res52_54 = [1., 1., 1.]
 cdef DTYPE_t[3] gamma_res52_54 = [1.21, 1.21, 1.25]
-cdef DTYPE_t R = 461.51805
 cdef DTYPE_t[56] n_res = [
   1.25335479e-02,  7.89576347e+00, -8.78032033e+00,  3.18025093e-01,
   -2.61455339e-01, -7.81997517e-03,  8.80894931e-03, -6.68565723e-01,
@@ -63,7 +61,6 @@ cdef DTYPE_t[56] t_res = [
   9.   ,  8.   , 16.   , 22.   , 23.   , 23.   , 10.   , 50.   ,
   44.   , 46.   , 50.   ,  0.   ,  1.   ,  4.   ,  0.   ,  0.   ]
 cdef DTYPE_t[2] _exp1_55_56 = [1.66666667, 1.66666667]
-
 # Fused coefficient array for 1 to 51.
 #   Coefficients (n, d, t, c) are contiguous in memory
 cdef DTYPE_t[204] ndtc1_51 = [
@@ -175,6 +172,21 @@ cdef DTYPE_t[8] n_ideal = [-8.32044648,  6.68321053,  3.00632   ,
         0.012436  ,  0.97315   ,  1.2795    ,  0.96956   ,  0.24873   ]
 cdef DTYPE_t[8] g_ideal = [ 0.        ,  0.        ,  0.        ,
         1.28728967,  3.53734222,  7.74073708,  9.24437796, 27.5075105 ]
+cdef DTYPE_t Tc   = 647.096      # K
+cdef DTYPE_t rhoc = 322          # kg / m^3
+cdef DTYPE_t R    = 0.46151805e3 # J / kg K
+# Saturated liquid density correlation (Saul and Wagner 1987 Eq. 2.3)
+cdef DTYPE_t[6] satl_powsb = [
+  0.3333333333333333, 0.6666666666666666, 1.6666666666666667,
+  5.333333333333333, 14.333333333333334, 36.666666666666664]
+cdef DTYPE_t[6] satl_coeffsb = [
+  1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
+# Saturated vapour density correlation (Saul and Wagner 1987 Eq. 2.2)
+cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
+  6.16666667, 11.83333333]
+cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
+  -44.6384, -64.3486]
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
@@ -845,3 +857,74 @@ def phir_dt(DTYPE_t d, DTYPE_t t):
     out += _coeff
 
   return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def prho_sat(DTYPE_t T):
+  ''' Returns isothermal saturation curve properties as tuple
+  (psat, rho_satl, rho_satv). Solves the Maxwell construction (see e.g. P.
+  Junglas).
+  Calls def functions in float_phi_functions (can be optimized to cdef fns).
+  '''
+  # Compute reciprocal reduced temperature
+  cdef DTYPE_t t = Tc / T
+  if t < 1.0:
+    return None, None, None, [0.0, 0.0], [0.0, 0.0]
+  elif t == 1.0:
+    # Special case: exactly critical
+    return 22.06e6, None, None, [0.0, 0.0], [0.0, 0.0]
+
+  cdef DTYPE_t _phir_d0
+  cdef DTYPE_t _phir_dd0
+  cdef DTYPE_t _phir_d1
+  cdef DTYPE_t _phir_dd1
+  cdef DTYPE_t _J00, _J01, _J10, _J11, _detJ
+  cdef DTYPE_t f0, f1
+  cdef DTYPE_t step0, step1
+  cdef DTYPE_t d0 = 1.0
+  cdef DTYPE_t d1 = 0
+  cdef DTYPE_t _c0
+
+  # Compute initial guess using independent sat curve correlations
+  cdef unsigned short i
+  for i in range(6):
+    _c0 = 1.0-1.0/t
+    d0 += satl_coeffsb[i] * _c0**satl_powsb[i]
+    d1 += satv_coeffsc[i] * _c0**satv_powsc[i]
+  d1 = exp(d1)
+  # Fixed step Newton
+  for i in range(3):
+    # Compute phir_d, phir_dd values
+    _phir_d0, _phir_dd0 = fused_phir_d_phir_dd(d0, t)
+    _phir_d1, _phir_dd1 = fused_phir_d_phir_dd(d1, t)
+    # Assemble Jacobian for Maxwell residual equation
+    _J00 = -2.0 * _phir_d0 - d0 * _phir_dd0 - phi0_d(d0, t)
+    _J01 = 2.0 * _phir_d1 + d1 * _phir_dd1 + phi0_d(d1, t)
+    _J10 = 1.0 + 2.0 * d0 * _phir_d0 + d0 * d0 * _phir_dd0
+    _J11 = -1.0 - 2.0 * d1 * _phir_d1 - d1 * d1 * _phir_dd1
+    _detJ = _J00 * _J11 - _J01 * _J10
+    # Assemble vector of Maxwell residuals
+    f0 = d1 * _phir_d1 - d0 * _phir_d0 \
+        - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
+    f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
+    # Compute Newton step
+    step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
+    step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
+    d0 += step0
+    d1 += step1
+  # Compute latest function value
+  _phir_d0, _phir_dd0 = fused_phir_d_phir_dd(d0, t)
+  f0 = d1 * _phir_d1 - d0 * _phir_d0 \
+       - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
+  f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
+  # Return psat, rho_satl, rho_satv, last_newton_step, residual
+  return d0 * (1.0 + d0 * _phir_d0) * rhoc * R * T, \
+    d0 * rhoc, d1 * rhoc, [step0, step1], [f0, f1]
+
+def fused_all(DTYPE_t d, DTYPE_t t):
+  pass
+
+def rho_pT(p, T):
+  pass
