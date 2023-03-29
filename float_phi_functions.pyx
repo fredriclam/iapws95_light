@@ -12,6 +12,7 @@ cimport cython
 
 cdef extern from "math.h":
     double exp(double x)
+    double log(double x)
 
 cdef DTYPE_t[2] a_res55_56 = [3.5, 3.5]
 cdef DTYPE_t[2] A_res55_56 = [0.32, 0.32]
@@ -170,14 +171,129 @@ cdef DTYPE_t[153] ndt1_51 = [
        -1.99057184e-01,  6.00000000e+00,  4.40000000e+01,
         3.17774973e-01,  6.00000000e+00,  4.60000000e+01,
        -1.18411824e-01,  6.00000000e+00,  5.00000000e+01]
-
-
+cdef DTYPE_t[8] n_ideal = [-8.32044648,  6.68321053,  3.00632   ,
+        0.012436  ,  0.97315   ,  1.2795    ,  0.96956   ,  0.24873   ]
+cdef DTYPE_t[8] g_ideal = [ 0.        ,  0.        ,  0.        ,
+        1.28728967,  3.53734222,  7.74073708,  9.24437796, 27.5075105 ]
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
 def _dummy(DTYPE_t d, DTYPE_t t):
+  ''' Dummy function that returns d (for profiling). '''
   return d
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of dimless Helmholtz function. '''
+  cdef DTYPE_t out = log(d) + n_ideal[0] + n_ideal[1] * t + n_ideal[2] * log(t)
+  cdef unsigned short i
+  for i in range(3,8):
+    out += n_ideal[i] * log(1.0 - exp(-g_ideal[i] * t))
+  return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0_d(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of d/dd dimless Helmholtz function. '''
+  return 1.0/d
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0_dd(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of d2/dd2 dimless Helmholtz function. '''
+  return -1.0/(d*d)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0_t(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of d/dt dimless Helmholtz function. '''
+  cdef DTYPE_t out = n_ideal[1] + n_ideal[2] / t
+  cdef unsigned short i
+  for i in range(3,8):
+    out += n_ideal[i] * g_ideal[i] * (1.0 / (1.0 - exp(-g_ideal[i] * t)) - 1.0)
+  return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0_tt(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of d2/dt2 dimless Helmholtz function. '''
+  cdef DTYPE_t out = -n_ideal[2] / (t * t)
+  cdef DTYPE_t _temp
+  cdef unsigned short i
+  for i in range(3,8):
+    _exp_result = exp(-g_ideal[i] * t)
+    out += -n_ideal[i] * g_ideal[i] * g_ideal[i] \
+      * _exp_result/((1.0 - _exp_result)*(1.0 - _exp_result))
+  return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phi0_dt(DTYPE_t d, DTYPE_t t):
+  ''' Ideal gas part phi0 of d2/(dd dt) dimless Helmholtz function. '''
+  return 0.0
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phir(DTYPE_t d, DTYPE_t t):
+  ''' Residual part of dimless Helmholtz function
+      phi = f/(RT).
+  Cython implementation for float input. '''
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  cdef DTYPE_t out = 0.0
+
+  # Use strides as below
+  # cdef n_coeff ndtc1_51[4*i]
+  # cdef d_coeff ndtc1_51[4*i+1]
+  # cdef t_coeff ndtc1_51[4*i+2]
+  # cdef c_coeff ndtc1_51[4*i+3]
+
+  # Compute uniform coefficients with mixed data (1-indices 1 to 51)
+  cdef unsigned short i
+  for i in range(7):
+    out += ndtc1_51[4*i] \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** ndtc1_51[4*i+2])
+  for i in range(7, 51):
+    out += ndtc1_51[4*i] \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** ndtc1_51[4*i+2]) \
+      * exp(-d ** ndtc1_51[4*i+3])
+
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _d_shift
+  cdef DTYPE_t _t_shift
+  # Compute heterogeneous coefficients for 1-indices 52 to 54
+  for i in range(51,54):
+    _d_shift = d - eps_res52_54[i-51]
+    _t_shift = t - gamma_res52_54[i-51]
+    out += n_res[i] * (d ** (d_res[i])) * (t ** t_res[i]) \
+      * exp(-alpha_res52_54[i-51] * _d_shift * _d_shift \
+      -beta_res52_54[i-51] * _t_shift * _t_shift)
+  # Compute heterogeneous coefficients for 1-indices 55 to 56
+  for i in range(54,56):
+    _theta = (1.0 - t) + A_res55_56[i-54] * d_quad ** _exp1_55_56[i-54]
+    _Delta = _theta*_theta + B_res55_56[i-54] * d_quad ** a_res55_56[i-54]
+    out += n_res[i] * (d ** (d_res[i])) * (t ** t_res[i]) \
+      * _Delta ** b_res55_56[i-54] * exp(-C_res55_56[i-54] * d_quad \
+      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+
+  return out
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -187,9 +303,7 @@ def phir_d(DTYPE_t d, DTYPE_t t):
   ''' First delta-derivative of residual part of dimless Helmholtz function
       phi = f/(RT).
   See also phir for more details.
-  Cython implementation for float input.
-  '''
-
+  Cython implementation for float input. '''
   cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
   cdef DTYPE_t _theta
   cdef DTYPE_t _Delta
@@ -203,7 +317,7 @@ def phir_d(DTYPE_t d, DTYPE_t t):
   # cdef c_coeff ndtc1_51[4*i+3]
 
   # Compute uniform coefficients with mixed data (1-indices 1 to 51)
-  cdef unsigned int i
+  cdef unsigned short i
   for i in range(7):
     # out += n_coeff * d_coeff * (d ** (d_coeff-1.0)) * (t ** t_coeff)
     out += ndtc1_51[4*i] \
@@ -272,7 +386,7 @@ def phir_dd(DTYPE_t d, DTYPE_t t):
   # cdef c_coeff ndtc1_51[4*i+3]
 
   # Compute uniform coefficients with mixed data (1-indices 1 to 51)
-  cdef unsigned int i
+  cdef unsigned short i
   for i in range(7):
     out += ndtc1_51[4*i] \
       * ndtc1_51[4*i+1] * (ndtc1_51[4*i+1] - 1.0) \
@@ -355,8 +469,8 @@ def phir_dd(DTYPE_t d, DTYPE_t t):
 @cython.nonecheck(False)
 @cython.cdivision(True)
 def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
-  ''' First and second delta-derivative of residual part of dimless
-    Helmholtz function
+  ''' Optimized routine for simultaneously computing the first and second
+  delta-derivatives of residual part of dimless Helmholtz function
       phi = f/(RT).
   See also phir for more details.
   Cython implementation for float input.
@@ -528,3 +642,206 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
     out_phir_dd += _c1 * _common
 
   return out_phir_d, out_phir_dd
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phir_t(DTYPE_t d, DTYPE_t t):
+  '''First tau-derivative of residual part of dimless Helmholtz function
+      phi = f/(RT). '''
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  cdef DTYPE_t out = 0.0
+
+  # Use strides as below
+  # cdef n_coeff ndtc1_51[4*i]
+  # cdef d_coeff ndtc1_51[4*i+1]
+  # cdef t_coeff ndtc1_51[4*i+2]
+  # cdef c_coeff ndtc1_51[4*i+3]
+
+  # Compute uniform coefficients with mixed data (1-indices 1 to 51)
+  cdef unsigned short i
+  for i in range(7):
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+2] \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** (ndtc1_51[4*i+2]-1))
+  for i in range(7, 51):
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+2] \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** (ndtc1_51[4*i+2]-1)) \
+      * exp(-d ** ndtc1_51[4*i+3])
+
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _d_shift
+  cdef DTYPE_t _t_shift
+  cdef DTYPE_t _coeff
+  # Compute heterogeneous coefficients for 1-indices 52 to 54
+  for i in range(51,54):
+    _d_shift = d - eps_res52_54[i-51]
+    _t_shift = t - gamma_res52_54[i-51]
+    out += n_res[i] * (d ** (d_res[i])) * (t ** (t_res[i]-1.0)) \
+      * (t_res[i] - 2.0 * beta_res52_54[i-51] * t * _t_shift) \
+      * exp(-alpha_res52_54[i-51] * _d_shift * _d_shift \
+      -beta_res52_54[i-51] * _t_shift * _t_shift)
+  # Compute heterogeneous coefficients for 1-indices 55 to 56
+  for i in range(54,56):
+    _theta = (1.0 - t) + A_res55_56[i-54] * d_quad ** _exp1_55_56[i-54]
+    _Delta = _theta*_theta + B_res55_56[i-54] * d_quad ** a_res55_56[i-54]
+    _coeff = n_res[i] * d * 2.0 * (
+      -_theta * b_res55_56[i-54] + _Delta * D_res55_56[i-54] * (1.0 - t)
+    ) * exp(-C_res55_56[i-54] * d_quad - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _coeff *= _Delta ** (b_res55_56[i-54] - 1.0) # 0.85 to 0.95
+    else:
+      _coeff = 0.0
+    out += _coeff
+
+  return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phir_tt(DTYPE_t d, DTYPE_t t):
+  '''Second tau-derivative of residual part of dimless Helmholtz function
+      phi = f/(RT). '''
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  cdef DTYPE_t out = 0.0
+  cdef comp = 0.0
+  cdef term = 0.0
+  cdef tent = 0.0
+
+  # Use strides as below
+  # cdef n_coeff ndtc1_51[4*i]
+  # cdef d_coeff ndtc1_51[4*i+1]
+  # cdef t_coeff ndtc1_51[4*i+2]
+  # cdef c_coeff ndtc1_51[4*i+3]
+
+  # Stable summation pattern
+  # # Get term
+  # tent = out + term + comp
+  # comp = (term + comp) - (tent - out)
+  # out = tent
+
+  # Compute uniform coefficients with mixed data (1-indices 1 to 51)
+  cdef unsigned short i
+  for i in range(7):
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+2] * (ndtc1_51[4*i+2] - 1.0) \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** (ndtc1_51[4*i+2] - 2.0))
+  for i in range(7, 51):
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+2] * (ndtc1_51[4*i+2] - 1.0) \
+      * (d ** (ndtc1_51[4*i+1])) * (t ** (ndtc1_51[4*i+2] - 2.0)) \
+      * exp(-d ** ndtc1_51[4*i+3])
+
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _d_shift
+  cdef DTYPE_t _t_shift
+  cdef DTYPE_t _coeff
+  # Compute heterogeneous coefficients for 1-indices 52 to 54
+  for i in range(51,54):
+    _d_shift = d - eps_res52_54[i-51]
+    _t_shift = t - gamma_res52_54[i-51]
+    _coeff = t_res[i] - 2.0 * beta_res52_54[i-51] * t \
+      * (t - gamma_res52_54[i-51])
+    out += n_res[i] * (d ** (d_res[i])) * (t ** (t_res[i]-2.0)) \
+      * exp(-alpha_res52_54[i-51] * _d_shift * _d_shift \
+        -beta_res52_54[i-51] * _t_shift * _t_shift) \
+      * (_coeff * _coeff - t_res[i] - 2.0 * beta_res52_54[i-51] * t * t)
+  # Compute heterogeneous coefficients for 1-indices 55 to 56
+  for i in range(54,56):
+    _theta = (1.0 - t) + A_res55_56[i-54] * d_quad ** _exp1_55_56[i-54]
+    _Delta = _theta*_theta + B_res55_56[i-54] * d_quad ** a_res55_56[i-54]
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _coeff = _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      return -float("inf")
+    out += _coeff * n_res[i] * 2.0 * d * (
+      b_res55_56[i-54] * (_Delta \
+        + 2.0 * _theta*_theta * (b_res55_56[i-54] - 1.0)
+        + 4.0 * _theta * _Delta * D_res55_56[i-54] * (t - 1.0))
+      + _Delta * _Delta * D_res55_56[i-54] \
+        * (2.0 * D_res55_56[i-54] * (t - 1.0) * (t - 1.0) - 1.0)
+    ) * exp(-C_res55_56[i-54] * d_quad - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+
+  return out
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def phir_dt(DTYPE_t d, DTYPE_t t):
+  '''Second mixed-derivative of residual part of dimless Helmholtz function
+      phi = f/(RT). '''
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  cdef DTYPE_t out = 0.0
+  cdef DTYPE_t _c1
+
+  # Use strides as below
+  # cdef n_coeff ndtc1_51[4*i]
+  # cdef d_coeff ndtc1_51[4*i+1]
+  # cdef t_coeff ndtc1_51[4*i+2]
+  # cdef c_coeff ndtc1_51[4*i+3]
+
+  # Compute uniform coefficients with mixed data (1-indices 1 to 51)
+  cdef unsigned short i
+  for i in range(7):
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+1] * ndtc1_51[4*i+2] \
+      * (d ** (ndtc1_51[4*i+1] - 1.0)) * (t ** (ndtc1_51[4*i+2] - 1.0))
+  for i in range(7, 51):
+    _c1 = -d ** ndtc1_51[4*i+3]
+    out += ndtc1_51[4*i] * ndtc1_51[4*i+2] \
+      * (ndtc1_51[4*i+1] + c_res1_51[i] * _c1) \
+      * (d ** (ndtc1_51[4*i+1] - 1.0)) * (t ** (ndtc1_51[4*i+2] - 1.0)) \
+      * exp(_c1)
+
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _dDelta
+  cdef DTYPE_t _d_shift
+  cdef DTYPE_t _t_shift
+  cdef DTYPE_t _coeff
+  cdef DTYPE_t _c2
+  # Compute heterogeneous coefficients for 1-indices 52 to 54
+  for i in range(51,54):
+    _d_shift = d - eps_res52_54[i-51]
+    _t_shift = t - gamma_res52_54[i-51]
+    out += n_res[i] * (d ** (d_res[i] - 1.0)) * (t ** (t_res[i] - 1.0)) \
+      * (d_res[i] - 2.0 * alpha_res52_54[i-51] * d * _d_shift) \
+      * (t_res[i] - 2.0 * beta_res52_54[i-51] * t * _t_shift) \
+      * exp(-alpha_res52_54[i-51] * _d_shift * _d_shift \
+      -beta_res52_54[i-51] * _t_shift * _t_shift)
+  # Compute heterogeneous coefficients for 1-indices 55 to 56
+  for i in range(54,56):
+    _c1 = d_quad**(_exp1_55_56[i-54] - 1.0)
+    _c2 = d_quad**(a_res55_56[i-54] - 1.0)
+    _theta = (1.0 - t) + A_res55_56[i-54] * d_quad * _c1
+    _Delta = _theta * _theta + B_res55_56[i-54] * d_quad * _c2
+    _dDelta = (d - 1.0) * (
+      A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+      + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2)
+    _coeff = n_res[i] * (
+      _Delta * _Delta * (-2.0 * D_res55_56[i-54] * (t - 1.0) \
+      + d * 4.0 * C_res55_56[i-54] * D_res55_56[i-54] * (d - 1.0) * (t - 1.0))
+      + d * _Delta * b_res55_56[i-54] * _dDelta \
+        * (-2.0 * D_res55_56[i-54] * (t - 1.0))
+      - 2.0 * _theta * b_res55_56[i-54] * _Delta \
+        * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
+      + d * (
+        -A_res55_56[i-54] * b_res55_56[i-54] * 2.0 / beta_res55_56[i-54] \
+          * _Delta * (d - 1.0) * _c1
+        - 2.0 * _theta * b_res55_56[i-54] * (b_res55_56[i-54] - 1.0) * _dDelta
+      )
+    ) * exp(-C_res55_56[i-54] * d_quad - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _coeff *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      _coeff = 0.0
+    out += _coeff
+
+  return out

@@ -7,7 +7,7 @@ from Cython.Build import cythonize
 # directive_defaults['binding'] = True
 
 setup(
-  ext_modules = cythonize(["float_phi_functions.pyx"])
+  ext_modules = cythonize(["float_phi_functions.pyx"], language_level="3")
 )
 
 # from distutils.core import setup

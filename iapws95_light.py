@@ -661,4 +661,4 @@ def fused_phir_d_phir_dd(d:float, t:float) -> float:
   ''' Interface for consistent syntax with Cython backend. '''
   d = np.array([d])
   t = np.array([t])
-  return phir_d(d, t).ravel()[0], phir_dd(d, t).ravel()[0]
+  return phir_d(np.array([d])), phir_dd(np.array([d]), np.array([t]))
