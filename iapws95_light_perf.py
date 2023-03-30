@@ -9,7 +9,8 @@ try:
 except ModuleNotFoundError as e:
   raise ModuleNotFoundError("Could not find float_phi_functions in local " +
     "directory. The module must be compiled locally using Cython. See " +
-    "the repository readme for more info.") from e
+    "the repository readme for more info. For a portable version, use " +
+    "iapws95_light.") from e
 
 ''' Verification utilities. '''
 
@@ -123,9 +124,3 @@ def print_timing():
     print(f"{name}      : {t*1e6:.2f} us")
   print(f"Ideal gas    : {t_ig * 1e6:.2f} us")
   print(f"phi_d+_dd    : {t_phir_d_phir_dd * 1e6:.2f} us")
-
-  # num_coeffs = 44*4 + 21 + 21 + 16 + 13
-  # print(f"=== Additional details ===")
-  # print(f"Number of coefficients in model: {num_coeffs}")
-  # print(f"Relative load per model dof:     " +
-  #       f"{(t2-t1)/(t2_ideal-t1_ideal)/num_coeffs:.3f}x")

@@ -70,7 +70,8 @@ def _itersolve_d(rho_mix, yw, T, d_init=1.0) -> float:
 
   def residual_and_slope(d:float) -> float:
     ''' Return value of scaled pressure difference and slope '''
-    phir_d, phir_dd = backend.fused_phir_d_phir_dd(d, t)
+    out = backend.fused_phir_d_phir_dd(d, t)
+    phir_d, phir_dd = out["first"], out["second"]
     val = (a*d + b)*d**2*phir_d + ((c2 * d) + c1)*d + c0
     slope = (3*a*d + 2*b)*d*phir_d \
       + (a*d + b)*d**2*phir_dd \
@@ -120,7 +121,9 @@ def solve_rhow(rho_mix:float, yw:float, T:float) -> float:
   d_init = 1.0
   if T < iapws95_light.Tc:
     # Compute saturation properties
-    psat, rhol, rhov = iapws95_light.prho_sat(T)
+    sat_info = backend.prho_sat(T)
+    psat, rhol, rhov = \
+      float(sat_info["psat"]), sat_info["rho_satl"], sat_info["rho_satv"]
     # Compute dependent variables
     ym = 1.0 - yw
     v_mix = 1.0 / rho_mix

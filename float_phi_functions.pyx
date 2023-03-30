@@ -1,4 +1,3 @@
-# cython: profile=True
 
 
 ''' # For cython timing: place at top
@@ -186,6 +185,15 @@ cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
   6.16666667, 11.83333333]
 cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
   -44.6384, -64.3486]
+# Generic pair
+cdef struct Pair:
+  DTYPE_t first
+  DTYPE_t second
+# Triple of saturation information
+cdef struct SatTriple:
+  DTYPE_t psat
+  DTYPE_t rho_satl
+  DTYPE_t rho_satv
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -199,7 +207,7 @@ def _dummy(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of dimless Helmholtz function. '''
   cdef DTYPE_t out = log(d) + n_ideal[0] + n_ideal[1] * t + n_ideal[2] * log(t)
   cdef unsigned short i
@@ -211,7 +219,7 @@ def phi0(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0_d(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0_d(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of d/dd dimless Helmholtz function. '''
   return 1.0/d
 
@@ -219,7 +227,7 @@ def phi0_d(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0_dd(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0_dd(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of d2/dd2 dimless Helmholtz function. '''
   return -1.0/(d*d)
 
@@ -227,7 +235,7 @@ def phi0_dd(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0_t(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0_t(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of d/dt dimless Helmholtz function. '''
   cdef DTYPE_t out = n_ideal[1] + n_ideal[2] / t
   cdef unsigned short i
@@ -239,7 +247,7 @@ def phi0_t(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0_tt(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0_tt(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of d2/dt2 dimless Helmholtz function. '''
   cdef DTYPE_t out = -n_ideal[2] / (t * t)
   cdef DTYPE_t _temp
@@ -254,7 +262,7 @@ def phi0_tt(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phi0_dt(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phi0_dt(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Ideal gas part phi0 of d2/(dd dt) dimless Helmholtz function. '''
   return 0.0
 
@@ -262,7 +270,7 @@ def phi0_dt(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir(DTYPE_t d, DTYPE_t t):
   ''' Residual part of dimless Helmholtz function
       phi = f/(RT).
   Cython implementation for float input. '''
@@ -311,7 +319,7 @@ def phir(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir_d(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir_d(DTYPE_t d, DTYPE_t t):
   ''' First delta-derivative of residual part of dimless Helmholtz function
       phi = f/(RT).
   See also phir for more details.
@@ -380,7 +388,7 @@ def phir_d(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir_dd(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir_dd(DTYPE_t d, DTYPE_t t):
   ''' Second delta-derivative of residual part of dimless Helmholtz function
       phi = f/(RT).
   See also phir for more details.
@@ -480,7 +488,7 @@ def phir_dd(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
+cpdef Pair fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Optimized routine for simultaneously computing the first and second
   delta-derivatives of residual part of dimless Helmholtz function
       phi = f/(RT).
@@ -653,13 +661,13 @@ def fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t):
       + (b_res55_56[i-54] - 1.0) * _dDelta_div * _dDelta_div) * d
     out_phir_dd += _c1 * _common
 
-  return out_phir_d, out_phir_dd
+  return Pair(out_phir_d, out_phir_dd)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir_t(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir_t(DTYPE_t d, DTYPE_t t):
   '''First tau-derivative of residual part of dimless Helmholtz function
       phi = f/(RT). '''
   cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
@@ -715,14 +723,11 @@ def phir_t(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir_tt(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir_tt(DTYPE_t d, DTYPE_t t):
   '''Second tau-derivative of residual part of dimless Helmholtz function
       phi = f/(RT). '''
   cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
   cdef DTYPE_t out = 0.0
-  cdef comp = 0.0
-  cdef term = 0.0
-  cdef tent = 0.0
 
   # Use strides as below
   # cdef n_coeff ndtc1_51[4*i]
@@ -785,7 +790,7 @@ def phir_tt(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def phir_dt(DTYPE_t d, DTYPE_t t):
+cpdef DTYPE_t phir_dt(DTYPE_t d, DTYPE_t t):
   '''Second mixed-derivative of residual part of dimless Helmholtz function
       phi = f/(RT). '''
   cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
@@ -862,7 +867,7 @@ def phir_dt(DTYPE_t d, DTYPE_t t):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def prho_sat(DTYPE_t T):
+cpdef prho_sat_stepinfo(DTYPE_t T):
   ''' Returns isothermal saturation curve properties as tuple
   (psat, rho_satl, rho_satv). Solves the Maxwell construction (see e.g. P.
   Junglas).
@@ -886,6 +891,7 @@ def prho_sat(DTYPE_t T):
   cdef DTYPE_t d0 = 1.0
   cdef DTYPE_t d1 = 0
   cdef DTYPE_t _c0
+  cdef Pair pair
 
   # Compute initial guess using independent sat curve correlations
   cdef unsigned short i
@@ -897,8 +903,12 @@ def prho_sat(DTYPE_t T):
   # Fixed step Newton
   for i in range(3):
     # Compute phir_d, phir_dd values
-    _phir_d0, _phir_dd0 = fused_phir_d_phir_dd(d0, t)
-    _phir_d1, _phir_dd1 = fused_phir_d_phir_dd(d1, t)
+    pair = fused_phir_d_phir_dd(d0, t)
+    _phir_d0 = pair.first
+    _phir_dd0 = pair.second
+    pair = fused_phir_d_phir_dd(d1, t)
+    _phir_d1 = pair.first
+    _phir_dd1 = pair.second 
     # Assemble Jacobian for Maxwell residual equation
     _J00 = -2.0 * _phir_d0 - d0 * _phir_dd0 - phi0_d(d0, t)
     _J01 = 2.0 * _phir_d1 + d1 * _phir_dd1 + phi0_d(d1, t)
@@ -915,7 +925,9 @@ def prho_sat(DTYPE_t T):
     d0 += step0
     d1 += step1
   # Compute latest function value
-  _phir_d0, _phir_dd0 = fused_phir_d_phir_dd(d0, t)
+  pair = fused_phir_d_phir_dd(d0, t)
+  _phir_d0 = pair.first
+  _phir_dd0 = pair.second
   f0 = d1 * _phir_d1 - d0 * _phir_d0 \
        - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
   f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
@@ -923,8 +935,158 @@ def prho_sat(DTYPE_t T):
   return d0 * (1.0 + d0 * _phir_d0) * rhoc * R * T, \
     d0 * rhoc, d1 * rhoc, [step0, step1], [f0, f1]
 
-def fused_all(DTYPE_t d, DTYPE_t t):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
+  ''' Version of prho_sat that does not return stepping/convergence
+  info. '''
+  # Compute reciprocal reduced temperature
+  cdef DTYPE_t t = Tc / T
+  if t < 1.0:
+    return SatTriple(-1.0, -1.0, -1.0)
+  elif t == 1.0:
+    # Special case: exactly critical
+    return SatTriple(22.06e6, -1.0, -1.0)
+
+  cdef DTYPE_t _phir_d0
+  cdef DTYPE_t _phir_dd0
+  cdef DTYPE_t _phir_d1
+  cdef DTYPE_t _phir_dd1
+  cdef DTYPE_t _J00, _J01, _J10, _J11, _detJ
+  cdef DTYPE_t f0, f1
+  cdef DTYPE_t step0, step1
+  cdef DTYPE_t d0 = 1.0
+  cdef DTYPE_t d1 = 0
+  cdef DTYPE_t _c0
+
+  # Compute initial guess using independent sat curve correlations
+  cdef unsigned short i
+  for i in range(6):
+    _c0 = 1.0-1.0/t
+    d0 += satl_coeffsb[i] * _c0**satl_powsb[i]
+    d1 += satv_coeffsc[i] * _c0**satv_powsc[i]
+  d1 = exp(d1)
+  # Fixed step Newton
+  for i in range(3):
+    # Compute phir_d, phir_dd values
+    pair = fused_phir_d_phir_dd(d0, t)
+    _phir_d0 = pair.first
+    _phir_dd0 = pair.second
+    pair = fused_phir_d_phir_dd(d1, t)
+    _phir_d1 = pair.first
+    _phir_dd1 = pair.second 
+    # Assemble Jacobian for Maxwell residual equation
+    _J00 = -2.0 * _phir_d0 - d0 * _phir_dd0 - phi0_d(d0, t)
+    _J01 = 2.0 * _phir_d1 + d1 * _phir_dd1 + phi0_d(d1, t)
+    _J10 = 1.0 + 2.0 * d0 * _phir_d0 + d0 * d0 * _phir_dd0
+    _J11 = -1.0 - 2.0 * d1 * _phir_d1 - d1 * d1 * _phir_dd1
+    _detJ = _J00 * _J11 - _J01 * _J10
+    # Assemble vector of Maxwell residuals
+    f0 = d1 * _phir_d1 - d0 * _phir_d0 \
+        - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
+    f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
+    # Compute Newton step
+    step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
+    step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
+    d0 += step0
+    d1 += step1
+  # Compute latest function value
+  pair = fused_phir_d_phir_dd(d0, t)
+  _phir_d0 = pair.first
+  _phir_dd0 = pair.second
+  # Return psat, rho_satl, rho_satv, last_newton_step, residual
+  return SatTriple(d0 * (1.0 + d0 * _phir_d0) * rhoc * R * T, \
+    d0 * rhoc, d1 * rhoc)
+
+cpdef fused_all(DTYPE_t d, DTYPE_t t):
   pass
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _phir_d, _phir_dd
+  cdef DTYPE_t _c0
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair pair
+  cdef SatTriple sat_triple
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    for i in range(6):
+      _c0 = 1.0-1.0/t
+      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
+      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_triple = prho_sat(T)
+      if d <= sat_triple.rho_satl / rhoc and d >= sat_triple.rho_satv / rhoc:
+        return sat_triple.psat
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  pair = fused_phir_d_phir_dd(d, t)
+  _phir_d = pair.first
+  _phir_dd = pair.second
+  return rho * R * T * (1.0 + d * _phir_d)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef SatTriple sat_triple
+  cdef DTYPE_t x
+
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    for i in range(6):
+      _c0 = 1.0-1.0/t
+      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
+      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_triple = prho_sat(T)
+      dsatl = sat_triple.rho_satl / rhoc
+      dsatv = sat_triple.rho_satv / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_triple.rho_satl) \
+            / (1.0 / sat_triple.rho_satv - 1.0 / sat_triple.rho_satl)
+        # Return mass-weighted sum saturation energies
+        return t * R * T * (
+          x * (phir_t(dsatv, t) + phi0_t(dsatv, t)) \
+          + (1.0-x) * (phir_t(dsatl, t) + phi0_t(dsatl, t)))
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  return t * R * T * (phir_t(d, t) + phi0_t(d, t))
 
 def rho_pT(p, T):
   pass

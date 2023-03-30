@@ -6,7 +6,6 @@ Computations are typically done nondimensionally, and in SI units otherwise.
 
 import csv
 import numpy as np
-import scipy.optimize
 from time import perf_counter
 
 ''' Module-level data loading ''' 
@@ -151,7 +150,8 @@ def rho_pt(p:float, T:float, newton_rtol=1e-9, max_steps=16):
   t = Tc / T
   damping_factor = 1.0
   # Determine initial value
-  psat, rho_satl, rho_satv = prho_sat(T)
+  out = prho_sat(T)
+  psat, rho_satl, rho_satv = out["psat"], out["rho_satl"], out["rho_satv"]
   if p > psat:
     # Set initial value to saturated liquid density
     d = rho_satl / rhoc
@@ -182,8 +182,11 @@ def prho_sat(T):
   Junglas). '''
   # Compute reciprocal reduced temperature
   t = Tc / T
-  if t < 1:
-    return None, None, None
+  if t <= 1:
+    return {"psat": np.array([np.nan]),
+    "rho_satl": np.nan,
+    "rho_satv": np.nan,
+  }
 
   # Define size-2 system for Maxwell construction for phase transition at T
   _phir_d = lambda d: float(phir_d(d, t))
@@ -245,11 +248,15 @@ def prho_sat(T):
   # Compute saturation pressure (use either d_final[0] or d_final[1])
   psat = d_vec[0]*(1.0 + d_vec[0]*_phir_d(d_vec[0])) \
     * rhoc * R * T
-  return np.array([psat]), rho_satl, rho_satv
+  return {"psat": np.array([psat]),
+    "rho_satl": rho_satl,
+    "rho_satv": rho_satv,
+  }
 
 def x(rho, T):
   ''' Vapour mass fraction (steam quality). '''
-  psat, rho_satl, rho_satv = prho_sat(T)
+  out = prho_sat(T)
+  psat, rho_satl, rho_satv = out["psat"], out["rho_satl"], out["rho_satv"]
   if rho <= rho_satv:
     # Saturated vapour
     return 1.0
@@ -347,7 +354,9 @@ def get_saturation_density_curves(range_T=None):
   if range_T is None:
     range_T = np.linspace(273.15, Tc, 60)
   # Sample saturation curve
-  range_rho_l, range_rho_v = zip(*[prho_sat(T)[1:3] for T in range_T])
+  sat_outputs = [prho_sat(T) for T in range_T]
+  range_rho_l = [out["rho_satl"] for out in sat_outputs]
+  range_rho_v = [out["rho_satv"] for out in sat_outputs]
   return np.array(range_rho_l), np.array(range_rho_v)
 
 ''' Ideal-gas part of dimensionless Helmholtz function and its derivatives. '''
@@ -661,4 +670,5 @@ def fused_phir_d_phir_dd(d:float, t:float) -> float:
   ''' Interface for consistent syntax with Cython backend. '''
   d = np.array([d])
   t = np.array([t])
-  return phir_d(np.array([d])), phir_dd(np.array([d]), np.array([t]))
+  return {"first": phir_d(np.array([d])),
+    "second": phir_dd(np.array([d]), np.array([t]))}
