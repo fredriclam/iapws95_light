@@ -12,7 +12,6 @@ cimport cython
 cdef extern from "math.h":
     double exp(double x)
     double log(double x)
-    double pow(double x, double y)
 
 ''' Load coefficients for the ideal gas part. '''
 # Ideal gas part coefficients: updated values of the 2018 IAPWS Release
@@ -118,13 +117,20 @@ cdef struct SatTriple:
   DTYPE_t rho_satl
   DTYPE_t rho_satv
 # Collection of phir and its derivatives
-cdef struct Derivatives_0_1_2:
+cdef struct Derivatives_phir_0_1_2:
   DTYPE_t phir
   DTYPE_t phir_d
   DTYPE_t phir_dd
   DTYPE_t phir_t
   DTYPE_t phir_tt
   DTYPE_t phir_dt
+cdef struct Derivatives_phi0_0_1_2:
+  DTYPE_t phi0
+  DTYPE_t phi0_d
+  DTYPE_t phi0_dd
+  DTYPE_t phi0_t
+  DTYPE_t phi0_tt
+  DTYPE_t phi0_dt
 # Coefficient triple (more efficient packing and tighter typing)
 cdef struct CoeffTriple_ndt_did:
   double n
@@ -462,185 +468,6 @@ cpdef DTYPE_t phir_dd(DTYPE_t d, DTYPE_t t):
       - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
 
   return out
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
-@cython.cdivision(True)
-cpdef Pair fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t) noexcept:
-  ''' Optimized routine for simultaneously computing the first and second
-  delta-derivatives of residual part of dimless Helmholtz function
-      phi = f/(RT).
-  See also phir for more details.
-  Cython implementation for float input.
-  '''
-
-  cdef DTYPE_t out_phir_d = 0.0
-  cdef DTYPE_t out_phir_dd = 0.0
-  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
-  # Declare temporary registers
-  cdef DTYPE_t _c1
-  cdef DTYPE_t _c2
-  cdef DTYPE_t _c_coeff
-  cdef DTYPE_t _common
-
-  # Use strides as below
-  # cdef n_coeff ndt1_51[3*i]
-  # cdef d_coeff ndt1_51[3*i+1]
-  # cdef t_coeff ndt1_51[3*i+2]
-
-  # Compute uniform coefficients with mixed coefficients ndt (1-indices 1 to 51)
-  cdef unsigned short i
-  for i in range(7):
-    _common = ndt1_51[3*i] * ndt1_51[3*i+1] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2])
-    out_phir_d += _common
-    out_phir_dd += _common * (ndt1_51[3*i+1] - 1.0) / d
-  # Integer c_coeff optimization: use c as
-  #   range(7,22) -> 1
-  #   range(22,42) -> 2
-  #   range(42,46) -> 3
-  #   range(46,47) -> 4
-  #   range(47,51) -> 6
-  # and manually exponentiate d**c
-  _c1 = -d
-  _c2 = exp(_c1)
-  _c_coeff = 1.0
-  for i in range(7,22):
-    _common = ndt1_51[3*i] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
-        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
-        + _c_coeff * _c_coeff * _c1 ) / d
-  _c1 = -d * d
-  _c2 = exp(_c1)
-  _c_coeff = 2.0
-  for i in range(22,42):
-    _common = ndt1_51[3*i] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
-        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
-        + _c_coeff * _c_coeff * _c1 ) / d
-  _c1 = -d * d * d
-  _c2 = exp(_c1)
-  _c_coeff = 3.0
-  for i in range(42,46):
-    _common = ndt1_51[3*i] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
-        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
-        + _c_coeff * _c_coeff * _c1 ) / d
-  _c1 = d * d
-  _c1 *= -_c1
-  _c2 = exp(_c1)
-  _c_coeff = 4.0
-  for i in range(46,47):
-    _common = ndt1_51[3*i] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
-        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
-        + _c_coeff * _c_coeff * _c1 ) / d
-  _c1 = d * d * d
-  _c1 *= -_c1
-  _c2 = exp(_c1)
-  _c_coeff = 6.0
-  for i in range(47,51):
-    _common = ndt1_51[3*i] \
-      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
-    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
-    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
-        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
-        + _c_coeff * _c_coeff * _c1 ) / d
-  
-  # One-loop form of range(7,51) (approx. 40% more load)
-  # for i in range(7, 51):
-  #   _c1 = -d ** ndtc1_51[4*i+3]
-  #   _common = ndtc1_51[4*i] \
-  #     * (d ** (ndtc1_51[4*i+1]-1.0)) * (t ** ndtc1_51[4*i+2]) \
-  #     * exp(_c1)
-  #   out_phir_d += _common * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1)
-  #   out_phir_dd += _common * ((ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1) \
-  #       * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1 - 1.0) \
-  #       + ndtc1_51[4*i+3] * ndtc1_51[4*i+3] * _c1 ) / d
-
-  # Declare temporary registers
-  cdef DTYPE_t _c3
-  cdef DTYPE_t _c4
-  cdef DTYPE_t _theta
-  cdef DTYPE_t _Delta
-  cdef DTYPE_t _dDelta_div
-  cdef DTYPE_t _ddDelta
-  # Compute heterogeneous coefficients for 1-indices 52 to 54
-  for i in range(51,54):
-    # Compute commons
-    _c1 = d - eps_res52_54[i-51]
-    _c2 = t - gamma_res52_54[i-51]
-    _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
-      -beta_res52_54[i-51] * _c2 * _c2) \
-      * (d * d # d ** (d_res[i]-1.0)
-        ) * (t ** t_res[i])
-    # Compute phir_d term
-    out_phir_d += _common * (d_res[i] \
-      - 2.0 * alpha_res52_54[i-51] * d * _c1)
-    # Compute phir_dd term
-    out_phir_dd += _common * d * (-2.0 * alpha_res52_54[i-51]
-      + 4.0 * alpha_res52_54[i-51] * alpha_res52_54[i-51]
-        * _c1 * _c1
-      - 4.0 * d_res[i] * alpha_res52_54[i-51] / d * _c1
-      + d_res[i] * (d_res[i] - 1.0) / (d * d))
-  # Compute heterogeneous coefficients for 1-indices 55 to 56
-  for i in range(54,56):
-    # Compute commons
-    _c1 = d_quad ** (_exp1_55_56[i-54] - 1.0) # 5/3
-    _c2 = d_quad ** (a_res55_56[i-54] - 1.0)
-    _theta = (1.0 - t) + A_res55_56[i-54] * _c1 * d_quad
-    _Delta = _theta*_theta + B_res55_56[i-54] * _c2 * d_quad
-    _common = n_res[i] * exp(-C_res55_56[i-54] * d_quad \
-      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
-    # Replace limiting value if Delta == 0
-    if _Delta != 0.0:
-      _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
-    else:
-      _common = 0.0
-
-    # Compute phir_d term
-    _c3 = (
-      _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
-      + b_res55_56[i-54] * d * (d-1.0) * (
-        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
-        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2
-      )
-    )    
-    out_phir_d += _c3 * _Delta * _common
-
-    # Compute phir_dd term
-    # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
-    _dDelta_div = (A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
-      + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2)
-    # Compute second derivative of Delta
-    _c3 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1
-    _ddDelta = _dDelta_div + (
-      4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0) * _c2
-      + 2.0 * _c3 * _c3 * d_quad
-      + 4.0 * _theta * A_res55_56[i-54] / beta_res55_56[i-54] \
-        * (_exp1_55_56[i-54] - 1.0) * _c1
-    )
-    # Finish d(Delta)/d(delta) computation in-place
-    _dDelta_div *= d - 1.0
-    # Compute coefficient to phir_dd
-    _c1 = _Delta*_Delta * (-4.0 * C_res55_56[i-54] * (d-1.0) 
-      + d * (2.0*C_res55_56[i-54]*d_quad - 1.0) * 2.0 * C_res55_56[i-54])
-    _c1 += _Delta * 2.0 * b_res55_56[i-54] * _dDelta_div \
-      * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
-    _c1 += b_res55_56[i-54] * (_Delta * _ddDelta
-      + (b_res55_56[i-54] - 1.0) * _dDelta_div * _dDelta_div) * d
-    out_phir_dd += _c1 * _common
-
-  return Pair(out_phir_d, out_phir_dd)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -996,13 +823,645 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
+cpdef Derivatives_phir_0_1_2 _dummy_struct(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Dummy function for timing cost of equivalent pow and exp ops plus
+      the functional call overhead. '''
+  cdef unsigned short i
+  # Calls to operator** by type:
+  # 5, 0, 0, 2+2*1
+  # Calls to exp by type:
+  # 0, 5, 3, 2
+  cdef DTYPE_t out_dummy = 0.0
+  for i in range(9):
+    out_dummy += d**t
+  for i in range(10):
+    out_dummy += exp(-d)
+  return Derivatives_phir_0_1_2(out_dummy, out_dummy, out_dummy, 0.0, 0.0, 0.0)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Derivatives_phir_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Optimized routine for simultaneously computing all 0th, 1st and 2nd
   derivatives of the residual part of the dimless Helmholtz function
       phi = f/(RT).
   Cython implementation for float input. Typical bottlenecks are computation of
   exp(DTYPE_t, DTYPE_t) and pow(DTYPE_t, DTYPE_t), where DTYPE_t is a floating
   point representation. 
+  '''
+  cdef DTYPE_t out_phir    = 0.0
+  cdef DTYPE_t out_phir_d  = 0.0
+  cdef DTYPE_t out_phir_dd = 0.0
+  cdef DTYPE_t out_phir_t  = 0.0
+  cdef DTYPE_t out_phir_tt = 0.0
+  cdef DTYPE_t out_phir_dt = 0.0
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  # Declare temporary registers
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
+  cdef DTYPE_t _c3
+  cdef DTYPE_t _c4
+  cdef DTYPE_t _c_coeff
+  cdef DTYPE_t _common
+
+  cdef unsigned short i
+  
+  # Compute terms with 1-indices 1 to 7 (0-indices 0 to 6), partially unrolled
+  #   Access coefficient array in order, but optimizes out some operator** calls
+  #   Loops are identical up to t ** typed_ndt_1_7[i].t changed for t in some.
+  for i in range(2):
+    # Compute common factors, requiring pow(double, double)
+    _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
+      * (t ** typed_ndt_1_7[i].t)
+    # Cache intermediate result phir_d
+    _c1 = typed_ndt_1_7[i].d * _common / d
+    # Compute output terms
+    out_phir += _common
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+    out_phir_t += _common * typed_ndt_1_7[i].t / t
+    out_phir_tt += _common * typed_ndt_1_7[i].t \
+      * (typed_ndt_1_7[i].t - 1.0) / (t*t)
+    out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
+  for i in range(2,3):
+    # Compute common factors, requiring pow(double, double)
+    _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
+      * t
+    # Cache intermediate result phir_d
+    _c1 = typed_ndt_1_7[i].d * _common / d
+    # Compute output terms
+    out_phir += _common
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+    out_phir_t += _common * typed_ndt_1_7[i].t / t
+    out_phir_tt += _common * typed_ndt_1_7[i].t \
+      * (typed_ndt_1_7[i].t - 1.0) / (t*t)
+    out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
+  for i in range(3,6):
+    # Compute common factors, requiring pow(double, double)
+    _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
+      * (t ** typed_ndt_1_7[i].t)
+    # Cache intermediate result phir_d
+    _c1 = typed_ndt_1_7[i].d * _common / d
+    # Compute output terms
+    out_phir += _common
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+    out_phir_t += _common * typed_ndt_1_7[i].t / t
+    out_phir_tt += _common * typed_ndt_1_7[i].t \
+      * (typed_ndt_1_7[i].t - 1.0) / (t*t)
+    out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
+  for i in range(6,7):
+    # Compute common factors, requiring pow(double, double)
+    _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
+      * t
+    # Cache intermediate result phir_d
+    _c1 = typed_ndt_1_7[i].d * _common / d
+    # Compute output terms
+    out_phir += _common
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+    out_phir_t += _common * typed_ndt_1_7[i].t / t
+    out_phir_tt += _common * typed_ndt_1_7[i].t \
+      * (typed_ndt_1_7[i].t - 1.0) / (t*t)
+    out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
+  
+  # Terms with 1-indices 8 to 51 are unrolled by value of coefficient c_coeff
+  #   range(7,22) -> 1
+  #   range(22,42) -> 2
+  #   range(42,46) -> 3
+  #   range(46,47) -> 4
+  #   range(47,51) -> 6
+  # allowing evaluating d**c using pow_fd(double, int). Loops are identical,
+  # with a different preamble for setting _c1, _c2, _c_coeff.
+  _c1 = -d
+  _c2 = exp(_c1)
+  _c_coeff = 1.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(0,15):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+    out_phir_t += _common * typed_ndt_8_51[i].t / t
+    out_phir_tt += _common * typed_ndt_8_51[i].t \
+      * (typed_ndt_8_51[i].t - 1.0) / (t*t)
+    out_phir_dt += _common * _c4 * typed_ndt_8_51[i].t / t
+  _c1 = -d * d
+  _c2 = exp(_c1)
+  _c_coeff = 2.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(15,35):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+    out_phir_t += _common * typed_ndt_8_51[i].t / t
+    out_phir_tt += _common * typed_ndt_8_51[i].t \
+      * (typed_ndt_8_51[i].t - 1.0) / (t*t)
+    out_phir_dt += _common * _c4 * typed_ndt_8_51[i].t / t
+  _c1 = -d * d * d
+  _c2 = exp(_c1)
+  _c_coeff = 3.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(35,39):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+    out_phir_t += _common * typed_ndt_8_51[i].t / t
+    out_phir_tt += _common * typed_ndt_8_51[i].t \
+      * (typed_ndt_8_51[i].t - 1.0) / (t*t)
+    out_phir_dt += _common * _c4 * typed_ndt_8_51[i].t / t
+  _c1 = d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 4.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(39,40):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+    out_phir_t += _common * typed_ndt_8_51[i].t / t
+    out_phir_tt += _common * typed_ndt_8_51[i].t \
+      * (typed_ndt_8_51[i].t - 1.0) / (t*t)
+    out_phir_dt += _common * _c4 * typed_ndt_8_51[i].t / t
+  _c1 = d * d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 6.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(40,44):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+    out_phir_t += _common * typed_ndt_8_51[i].t / t
+    out_phir_tt += _common * typed_ndt_8_51[i].t \
+      * (typed_ndt_8_51[i].t - 1.0) / (t*t)
+    out_phir_dt += _common * _c4 * typed_ndt_8_51[i].t / t
+  
+  # Terms with 1-indices 52 to 54 are Gaussian terms. Factors with coefficients
+  # that are shared across all terms are computed in the preamble.
+  cdef DTYPE_t _c5
+  # Compute Gaussian terms for 1-indices 52 to 54
+  _c1 = d - eps_res52_54[0]     # d_shift
+  _c4 = d_res[51] - 2.0 * alpha_res52_54[0] * d * _c1
+  _c5 = d * (-2.0 * alpha_res52_54[0]
+      + 4.0 * alpha_res52_54[0] * alpha_res52_54[0]
+        * _c1 * _c1
+      - 4.0 * d_res[51] * alpha_res52_54[0] / d * _c1
+      + d_res[51] * (d_res[51] - 1.0) / (d * d))
+  for i in range(51,54):
+    # Compute commons    
+    _c2 = t - gamma_res52_54[i-51]   # t_shift
+    _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
+      -beta_res52_54[i-51] * _c2 * _c2) \
+      * (d * d # unrolled d ** (d_res[i]-1.0)
+        ) * pow_fd(t, t_res_52_54[i-51])
+    # Compute d derivative path
+    out_phir += _common * d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * _c5
+    # Compute t derivative path
+    _c3 = (t_res[i] - 2.0 * beta_res52_54[i-51] * t * _c2) / t
+    out_phir_t += _common * d * _c3
+    out_phir_tt += _common * d \
+      * (_c3 * _c3 - t_res[i]/ (t * t) - 2.0 * beta_res52_54[i-51])
+    # Compute mixed derivative
+    out_phir_dt += _common * _c4 * _c3
+
+  # Terms with 1-indices 55 to 56 are the two nonanalytical terms.  
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _dDelta
+  cdef DTYPE_t _ddDelta
+  cdef bint phir_tt_isinf = False
+  _c1 = d_quad ** (2.0 / 3.0) # d ** (1/(2 *beta) - 1)
+  _c2 = d_quad ** (2.5) # d ** (a - 1)
+  _theta = (1.0 - t) + A_res55_56[0] * _c1 * d_quad
+  _Delta = _theta*_theta + B_res55_56[0] * _c2 * d_quad
+  # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
+  _dDelta = (A_res55_56[0] * _theta * 2.0 / beta_res55_56[0] * _c1
+    + 2.0 * B_res55_56[0] * a_res55_56[0] * _c2)
+  # Compute second derivative of Delta
+  _c3 = A_res55_56[0] / beta_res55_56[0] * _c1
+  _ddDelta = _dDelta + (
+    4.0 * B_res55_56[0] * a_res55_56[0] * (a_res55_56[0] - 1.0) * _c2
+    + 2.0 * _c3 * _c3 * d_quad
+    + 4.0 * _theta * A_res55_56[0] / beta_res55_56[0] \
+      * (_exp1_55_56[0] - 1.0) * _c1
+  )
+  # Finish d(Delta)/d(delta) computation in-place
+  _dDelta *= d - 1.0
+  for i in range(54,56):
+    # Compute factor common to all derivatives
+    _common = n_res[i] * exp(-C_res55_56[i-54] * d_quad \
+      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value of Delta**(b-2) if Delta == 0
+    if _Delta != 0.0:
+      _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      _common = 0.0
+
+    # Compute d derivative path
+    out_phir += _common * d * _Delta * _Delta
+    # Compute phir_d term
+    out_phir_d += _common * _Delta * (
+      _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
+      + b_res55_56[i-54] * d * (d-1.0) * (
+        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2
+      )
+    )
+    # Compute phir_dd term
+    _c3 = _Delta*_Delta * (-4.0 * C_res55_56[i-54] * (d-1.0) 
+      + d * (2.0*C_res55_56[i-54]*d_quad - 1.0) * 2.0 * C_res55_56[i-54])
+    _c3 += _Delta * 2.0 * b_res55_56[i-54] * _dDelta \
+      * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
+    _c3 += b_res55_56[i-54] * (_Delta * _ddDelta
+      + (b_res55_56[i-54] - 1.0) * _dDelta * _dDelta) * d
+    out_phir_dd += _c3 * _common
+
+    # Compute t derivative path
+    out_phir_t += _common * 2.0 * d * (
+      -_theta * b_res55_56[i-54] + _Delta * D_res55_56[i-54] * (1.0 - t)
+      ) * _Delta
+    # Compute phir_tt term
+    # Replace limiting value if Delta == 0
+    if _Delta == 0.0:
+      phir_tt_isinf = True    
+    out_phir_tt += _common * 2.0 * d * (
+      b_res55_56[i-54] * (_Delta \
+        + 2.0 * _theta*_theta * (b_res55_56[i-54] - 1.0)
+        + 4.0 * _theta * _Delta * D_res55_56[i-54] * (t - 1.0))
+      + _Delta * _Delta * D_res55_56[i-54] \
+        * (2.0 * D_res55_56[i-54] * (t - 1.0) * (t - 1.0) - 1.0)
+    )
+
+    # Compute mixed derivative
+    out_phir_dt += _common * (
+      _Delta * _Delta * (-2.0 * D_res55_56[i-54] * (t - 1.0) \
+      + d * 4.0 * C_res55_56[i-54] * D_res55_56[i-54] * (d - 1.0) * (t - 1.0))
+      + d * _Delta * b_res55_56[i-54] * _dDelta \
+        * (-2.0 * D_res55_56[i-54] * (t - 1.0))
+      - 2.0 * _theta * b_res55_56[i-54] * _Delta \
+        * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
+      + d * (
+        -A_res55_56[i-54] * b_res55_56[i-54] * 2.0 / beta_res55_56[i-54] \
+          * _Delta * (d - 1.0) * _c1
+        - 2.0 * _theta * b_res55_56[i-54] * (b_res55_56[i-54] - 1.0) * _dDelta
+      )
+    )
+
+  if phir_tt_isinf:
+    out_phir_tt = -float("inf")
+  return Derivatives_phir_0_1_2(out_phir, out_phir_d, out_phir_dd,
+    out_phir_t, out_phir_tt, out_phir_dt)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Pair fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Optimized routine for simultaneously computing only the 1st and 2nd
+  d-derivatives of the residual part of the dimless Helmholtz function
+      phi = f/(RT).
+  '''
+  cdef DTYPE_t out_phir_d  = 0.0
+  cdef DTYPE_t out_phir_dd = 0.0
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  # Declare temporary registers
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
+  cdef DTYPE_t _c3
+  cdef DTYPE_t _c4
+  cdef DTYPE_t _c_coeff
+  cdef DTYPE_t _common
+
+  cdef unsigned short i
+  
+  # Compute terms with 1-indices 1 to 7 (0-indices 0 to 6), partially unrolled
+  #   Access coefficient array in order, but optimizes out some operator** calls
+  #   Loops are identical up to t ** typed_ndt_1_7[i].t changed for t in some.
+  for i in range(2):
+    _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
+      * pow_fd(d, typed_ndt_1_7[i].d) \
+      * (t ** typed_ndt_1_7[i].t) / d
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+  for i in range(2,3):
+    _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
+      * pow_fd(d, typed_ndt_1_7[i].d) \
+      * t / d
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+  for i in range(3,6):
+    _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
+      * pow_fd(d, typed_ndt_1_7[i].d) \
+      * (t ** typed_ndt_1_7[i].t) / d
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+  for i in range(6,7):
+    _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
+      * pow_fd(d, typed_ndt_1_7[i].d) \
+      * t / d
+    out_phir_d += _c1
+    out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
+  
+  # Terms with 1-indices 8 to 51 are unrolled by value of coefficient c_coeff
+  #   range(7,22) -> 1
+  #   range(22,42) -> 2
+  #   range(42,46) -> 3
+  #   range(46,47) -> 4
+  #   range(47,51) -> 6
+  # allowing evaluating d**c using pow_fd(double, int). Loops are identical,
+  # with a different preamble for setting _c1, _c2, _c_coeff.
+  _c1 = -d
+  _c2 = exp(_c1)
+  _c_coeff = 1.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(0,15):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+  _c1 = -d * d
+  _c2 = exp(_c1)
+  _c_coeff = 2.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(15,35):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+  _c1 = -d * d * d
+  _c2 = exp(_c1)
+  _c_coeff = 3.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(35,39):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+  _c1 = d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 4.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(39,40):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+  _c1 = d * d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 6.0
+  _c3 = _c_coeff * _c_coeff * _c1 / (d*d)
+  for i in range(40,44):
+    # Compute common factors
+    _common = typed_ndt_8_51[i].n \
+      * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
+    # Compute first d-derivative operator
+    _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
+  
+  # Terms with 1-indices 52 to 54 are Gaussian terms. Factors with coefficients
+  # that are shared across all terms are computed in the preamble.
+  cdef DTYPE_t _c5
+  # Compute Gaussian terms for 1-indices 52 to 54
+  _c1 = d - eps_res52_54[0]     # d_shift
+  _c4 = d_res[51] - 2.0 * alpha_res52_54[0] * d * _c1
+  _c5 = d * (-2.0 * alpha_res52_54[0]
+      + 4.0 * alpha_res52_54[0] * alpha_res52_54[0]
+        * _c1 * _c1
+      - 4.0 * d_res[51] * alpha_res52_54[0] / d * _c1
+      + d_res[51] * (d_res[51] - 1.0) / (d * d))
+  for i in range(51,54):
+    # Compute commons    
+    _c2 = t - gamma_res52_54[i-51]   # t_shift
+    _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
+      -beta_res52_54[i-51] * _c2 * _c2) \
+      * (d * d # unrolled d ** (d_res[i]-1.0)
+        ) * pow_fd(t, t_res_52_54[i-51])
+    # Compute d derivative path
+    out_phir_d += _common * _c4
+    out_phir_dd += _common * _c5
+
+  # Terms with 1-indices 55 to 56 are the two nonanalytical terms.  
+  # Declare temporary registers
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _dDelta
+  cdef DTYPE_t _ddDelta
+  _c1 = d_quad ** (2.0 / 3.0) # d ** (1/(2 *beta) - 1)
+  _c2 = d_quad ** (2.5) # d ** (a - 1)
+  _theta = (1.0 - t) + A_res55_56[0] * _c1 * d_quad
+  _Delta = _theta*_theta + B_res55_56[0] * _c2 * d_quad
+  # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
+  _dDelta = (A_res55_56[0] * _theta * 2.0 / beta_res55_56[0] * _c1
+    + 2.0 * B_res55_56[0] * a_res55_56[0] * _c2)
+  # Compute second derivative of Delta
+  _c3 = A_res55_56[0] / beta_res55_56[0] * _c1
+  _ddDelta = _dDelta + (
+    4.0 * B_res55_56[0] * a_res55_56[0] * (a_res55_56[0] - 1.0) * _c2
+    + 2.0 * _c3 * _c3 * d_quad
+    + 4.0 * _theta * A_res55_56[0] / beta_res55_56[0] \
+      * (_exp1_55_56[0] - 1.0) * _c1
+  )
+  # Finish d(Delta)/d(delta) computation in-place
+  _dDelta *= d - 1.0
+  for i in range(54,56):
+    # Compute factor common to all derivatives
+    _common = n_res[i] * exp(-C_res55_56[i-54] * d_quad \
+      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value of Delta**(b-2) if Delta == 0
+    if _Delta != 0.0:
+      _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      _common = 0.0
+    # Compute phir_d term
+    out_phir_d += _common * _Delta * (
+      _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
+      + b_res55_56[i-54] * d * (d-1.0) * (
+        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2
+      )
+    )
+    # Compute phir_dd term
+    _c3 = _Delta*_Delta * (-4.0 * C_res55_56[i-54] * (d-1.0) 
+      + d * (2.0*C_res55_56[i-54]*d_quad - 1.0) * 2.0 * C_res55_56[i-54])
+    _c3 += _Delta * 2.0 * b_res55_56[i-54] * _dDelta \
+      * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
+    _c3 += b_res55_56[i-54] * (_Delta * _ddDelta
+      + (b_res55_56[i-54] - 1.0) * _dDelta * _dDelta) * d
+    out_phir_dd += _c3 * _common
+
+  return Pair(out_phir_d, out_phir_dd)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _phir_d, _phir_dd
+  cdef DTYPE_t _c0
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair pair
+  cdef SatTriple sat_triple
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    for i in range(6):
+      _c0 = 1.0-1.0/t
+      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
+      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_triple = prho_sat(T)
+      if d <= sat_triple.rho_satl / rhoc and d >= sat_triple.rho_satv / rhoc:
+        return sat_triple.psat
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  pair = fused_phir_d_phir_dd(d, t)
+  _phir_d = pair.first
+  _phir_dd = pair.second
+  return rho * R * T * (1.0 + d * _phir_d)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  ''' Energy per unit mass (SI -- J / kg). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef SatTriple sat_triple
+  cdef DTYPE_t x
+
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    for i in range(6):
+      _c0 = 1.0-1.0/t
+      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
+      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_triple = prho_sat(T)
+      dsatl = sat_triple.rho_satl / rhoc
+      dsatv = sat_triple.rho_satv / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_triple.rho_satl) \
+            / (1.0 / sat_triple.rho_satv - 1.0 / sat_triple.rho_satl)
+        # Return mass-weighted sum saturation energies
+        return t * R * T * (
+          x * (fused_phir_all(dsatv, t).phir_t + phi0_t(dsatv, t)) \
+          + (1.0-x) * (fused_phir_all(dsatl, t).phir_t + phi0_t(dsatl, t)))
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  return t * R * T * (fused_phir_all(d, t).phir_t + phi0_t(d, t))
+
+def rho_pT(p, T):
+  pass
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Derivatives_phi0_0_1_2 fused_phi0_all(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Ideal gas part phi0 of dimless Helmholtz function. '''
+
+  # Compute d-dependent term and first three t-dependent terms
+  cdef DTYPE_t phi0 = log(d) + n_ideal[0] + n_ideal[1] * t + n_ideal[2] * log(t)
+  cdef DTYPE_t phi0_t = n_ideal[1] + n_ideal[2] / t
+  cdef DTYPE_t phi0_tt = -n_ideal[2] / (t * t)
+  cdef DTYPE_t _exp_result
+  cdef unsigned short i
+  for i in range(3,8):
+    _exp_result = exp(-g_ideal[i] * t)
+    phi0 += n_ideal[i] * log(1.0 - _exp_result)
+    phi0_t += n_ideal[i] * g_ideal[i] * (1.0 / (1.0 - _exp_result) - 1.0)
+    phi0_tt += -n_ideal[i] * g_ideal[i] * g_ideal[i] \
+      * _exp_result/((1.0 - _exp_result)*(1.0 - _exp_result))
+
+  # Initializer list: DTYPE_t phi0, phi0_d, phi0_dd,  phi0_t, phi0_tt, phi0_dt
+  return Derivatives_phi0_0_1_2(phi0, 1.0/d, -1.0/(d*d), phi0_t, phi0_tt, 0.0)
+
+''' Legacy functions. '''
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Derivatives_phir_0_1_2 _fused_phir_all_clean(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Optimized routine for simultaneously computing all 0th, 1st and 2nd
+  derivatives of the residual part of the dimless Helmholtz function
+      phi = f/(RT).
+  Cython implementation for float input. Typical bottlenecks are computation of
+  exp(DTYPE_t, DTYPE_t) and pow(DTYPE_t, DTYPE_t), where DTYPE_t is a floating
+  point representation.
+  Less aggressively optimized version for code readability.
   '''
   cdef DTYPE_t out_phir    = 0.0
   cdef DTYPE_t out_phir_d  = 0.0
@@ -1025,16 +1484,18 @@ cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
     # Compute common factors, requiring pow(double, double)
     _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
       * (t ** typed_ndt_1_7[i].t)
-    out_phir += _common
     # Cache intermediate result phir_d
     _c1 = typed_ndt_1_7[i].d * _common / d
-    # Apply derivative operators
+    # Compute output terms
+    out_phir += _common
     out_phir_d += _c1
     out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
     out_phir_t += _common * typed_ndt_1_7[i].t / t
     out_phir_tt += _common * typed_ndt_1_7[i].t \
       * (typed_ndt_1_7[i].t - 1.0) / (t*t)
     out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
+
+  
 
   # Terms with 1-indices 8 to 51 are unrolled by value of coefficient c_coeff
   #   range(7,22) -> 1
@@ -1258,94 +1719,184 @@ cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
 
   if phir_tt_isinf:
     out_phir_tt = -float("inf")
-  return Derivatives_0_1_2(out_phir, out_phir_d, out_phir_dd,
+  return Derivatives_phir_0_1_2(out_phir, out_phir_d, out_phir_dd,
     out_phir_t, out_phir_tt, out_phir_dt)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
-  cdef DTYPE_t d = rho / rhoc
-  cdef DTYPE_t t = Tc / T
-  cdef DTYPE_t _phir_d, _phir_dd
-  cdef DTYPE_t _c0
-  cdef DTYPE_t dsatl = 1.0
-  cdef DTYPE_t dsatv = 0
-  cdef DTYPE_t sat_atol = 0.5e-2
-  cdef Pair pair
-  cdef SatTriple sat_triple
+cpdef Pair _fused_phir_d_phir_dd_clean(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Optimized routine for simultaneously computing the first and second
+  delta-derivatives of residual part of dimless Helmholtz function
+      phi = f/(RT).
+  See also phir for more details.
+  Cython implementation for float input.
+  '''
 
-  # Compute approximate saturation curve
+  cdef DTYPE_t out_phir_d = 0.0
+  cdef DTYPE_t out_phir_dd = 0.0
+  cdef DTYPE_t d_quad = (d - 1.0) * (d - 1.0)
+  # Declare temporary registers
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
+  cdef DTYPE_t _c_coeff
+  cdef DTYPE_t _common
+
+  # Use strides as below
+  # cdef n_coeff ndt1_51[3*i]
+  # cdef d_coeff ndt1_51[3*i+1]
+  # cdef t_coeff ndt1_51[3*i+2]
+
+  # Compute uniform coefficients with mixed coefficients ndt (1-indices 1 to 51)
   cdef unsigned short i
-  if t > 1.0:
-    for i in range(6):
-      _c0 = 1.0-1.0/t
-      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
-      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
-    dsatv = exp(dsatv)
+  for i in range(7):
+    _common = ndt1_51[3*i] * ndt1_51[3*i+1] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2])
+    out_phir_d += _common
+    out_phir_dd += _common * (ndt1_51[3*i+1] - 1.0) / d
+  # Integer c_coeff optimization: use c as
+  #   range(7,22) -> 1
+  #   range(22,42) -> 2
+  #   range(42,46) -> 3
+  #   range(46,47) -> 4
+  #   range(47,51) -> 6
+  # and manually exponentiate d**c
+  _c1 = -d
+  _c2 = exp(_c1)
+  _c_coeff = 1.0
+  for i in range(7,22):
+    _common = ndt1_51[3*i] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
+        + _c_coeff * _c_coeff * _c1 ) / d
+  _c1 = -d * d
+  _c2 = exp(_c1)
+  _c_coeff = 2.0
+  for i in range(22,42):
+    _common = ndt1_51[3*i] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
+        + _c_coeff * _c_coeff * _c1 ) / d
+  _c1 = -d * d * d
+  _c2 = exp(_c1)
+  _c_coeff = 3.0
+  for i in range(42,46):
+    _common = ndt1_51[3*i] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
+        + _c_coeff * _c_coeff * _c1 ) / d
+  _c1 = d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 4.0
+  for i in range(46,47):
+    _common = ndt1_51[3*i] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
+        + _c_coeff * _c_coeff * _c1 ) / d
+  _c1 = d * d * d
+  _c1 *= -_c1
+  _c2 = exp(_c1)
+  _c_coeff = 6.0
+  for i in range(47,51):
+    _common = ndt1_51[3*i] \
+      * (d ** (ndt1_51[3*i+1]-1.0)) * (t ** ndt1_51[3*i+2]) * _c2
+    out_phir_d += _common * (ndt1_51[3*i+1] + _c_coeff * _c1)
+    out_phir_dd += _common * ((ndt1_51[3*i+1] + _c_coeff * _c1) \
+        * (ndt1_51[3*i+1] + _c_coeff * _c1 - 1.0) \
+        + _c_coeff * _c_coeff * _c1 ) / d
+  
+  # One-loop form of range(7,51) (approx. 40% more load)
+  # for i in range(7, 51):
+  #   _c1 = -d ** ndtc1_51[4*i+3]
+  #   _common = ndtc1_51[4*i] \
+  #     * (d ** (ndtc1_51[4*i+1]-1.0)) * (t ** ndtc1_51[4*i+2]) \
+  #     * exp(_c1)
+  #   out_phir_d += _common * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1)
+  #   out_phir_dd += _common * ((ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1) \
+  #       * (ndtc1_51[4*i+1] + ndtc1_51[4*i+3] * _c1 - 1.0) \
+  #       + ndtc1_51[4*i+3] * ndtc1_51[4*i+3] * _c1 ) / d
 
-    # Check if in or near phase equilibrium region
-    if d < dsatl + sat_atol and d > dsatv - sat_atol:
-      # Compute precise saturation curve and saturation pressure
-      sat_triple = prho_sat(T)
-      if d <= sat_triple.rho_satl / rhoc and d >= sat_triple.rho_satv / rhoc:
-        return sat_triple.psat
+  # Declare temporary registers
+  cdef DTYPE_t _c3
+  cdef DTYPE_t _c4
+  cdef DTYPE_t _theta
+  cdef DTYPE_t _Delta
+  cdef DTYPE_t _dDelta_div
+  cdef DTYPE_t _ddDelta
+  # Compute heterogeneous coefficients for 1-indices 52 to 54
+  for i in range(51,54):
+    # Compute commons
+    _c1 = d - eps_res52_54[i-51]
+    _c2 = t - gamma_res52_54[i-51]
+    _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
+      -beta_res52_54[i-51] * _c2 * _c2) \
+      * (d * d # d ** (d_res[i]-1.0)
+        ) * (t ** t_res[i])
+    # Compute phir_d term
+    out_phir_d += _common * (d_res[i] \
+      - 2.0 * alpha_res52_54[i-51] * d * _c1)
+    # Compute phir_dd term
+    out_phir_dd += _common * d * (-2.0 * alpha_res52_54[i-51]
+      + 4.0 * alpha_res52_54[i-51] * alpha_res52_54[i-51]
+        * _c1 * _c1
+      - 4.0 * d_res[i] * alpha_res52_54[i-51] / d * _c1
+      + d_res[i] * (d_res[i] - 1.0) / (d * d))
+  # Compute heterogeneous coefficients for 1-indices 55 to 56
+  for i in range(54,56):
+    # Compute commons
+    _c1 = d_quad ** (_exp1_55_56[i-54] - 1.0) # 5/3
+    _c2 = d_quad ** (a_res55_56[i-54] - 1.0)
+    _theta = (1.0 - t) + A_res55_56[i-54] * _c1 * d_quad
+    _Delta = _theta*_theta + B_res55_56[i-54] * _c2 * d_quad
+    _common = n_res[i] * exp(-C_res55_56[i-54] * d_quad \
+      - D_res55_56[i-54]*(t - 1.0)*(t - 1.0))
+    # Replace limiting value if Delta == 0
+    if _Delta != 0.0:
+      _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
+    else:
+      _common = 0.0
 
-    # TODO: Near-critical-point treatment
-    pass
+    # Compute phir_d term
+    _c3 = (
+      _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
+      + b_res55_56[i-54] * d * (d-1.0) * (
+        A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+        + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2
+      )
+    )    
+    out_phir_d += _c3 * _Delta * _common
 
-  # Pure phase pressure computation
-  pair = fused_phir_d_phir_dd(d, t)
-  _phir_d = pair.first
-  _phir_dd = pair.second
-  return rho * R * T * (1.0 + d * _phir_d)
+    # Compute phir_dd term
+    # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
+    _dDelta_div = (A_res55_56[i-54] * _theta * 2.0 / beta_res55_56[i-54] * _c1
+      + 2.0 * B_res55_56[i-54] * a_res55_56[i-54] * _c2)
+    # Compute second derivative of Delta
+    _c3 = A_res55_56[i-54] / beta_res55_56[i-54] * _c1
+    _ddDelta = _dDelta_div + (
+      4.0 * B_res55_56[i-54] * a_res55_56[i-54] * (a_res55_56[i-54] - 1.0) * _c2
+      + 2.0 * _c3 * _c3 * d_quad
+      + 4.0 * _theta * A_res55_56[i-54] / beta_res55_56[i-54] \
+        * (_exp1_55_56[i-54] - 1.0) * _c1
+    )
+    # Finish d(Delta)/d(delta) computation in-place
+    _dDelta_div *= d - 1.0
+    # Compute coefficient to phir_dd
+    _c1 = _Delta*_Delta * (-4.0 * C_res55_56[i-54] * (d-1.0) 
+      + d * (2.0*C_res55_56[i-54]*d_quad - 1.0) * 2.0 * C_res55_56[i-54])
+    _c1 += _Delta * 2.0 * b_res55_56[i-54] * _dDelta_div \
+      * (1.0 - 2.0 * d * C_res55_56[i-54] * (d - 1.0))
+    _c1 += b_res55_56[i-54] * (_Delta * _ddDelta
+      + (b_res55_56[i-54] - 1.0) * _dDelta_div * _dDelta_div) * d
+    out_phir_dd += _c1 * _common
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
-@cython.cdivision(True)
-def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
-  ''' Energy per unit mass (SI -- J / kg). '''
-  cdef DTYPE_t d = rho / rhoc
-  cdef DTYPE_t t = Tc / T
-  cdef DTYPE_t _c0
-  cdef DTYPE_t dsatl = 1.0
-  cdef DTYPE_t dsatv = 0
-  cdef DTYPE_t sat_atol = 0.5e-2
-  cdef SatTriple sat_triple
-  cdef DTYPE_t x
-
-
-  # Compute approximate saturation curve
-  cdef unsigned short i
-  if t > 1.0:
-    for i in range(6):
-      _c0 = 1.0-1.0/t
-      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
-      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
-    dsatv = exp(dsatv)
-
-    # Check if in or near phase equilibrium region
-    if d < dsatl + sat_atol and d > dsatv - sat_atol:
-      # Compute precise saturation curve and saturation pressure
-      sat_triple = prho_sat(T)
-      dsatl = sat_triple.rho_satl / rhoc
-      dsatv = sat_triple.rho_satv / rhoc
-      if d <= dsatl and d >= dsatv:
-        # Compute vapour mass fraction
-        x = (1.0 / rho - 1.0 / sat_triple.rho_satl) \
-            / (1.0 / sat_triple.rho_satv - 1.0 / sat_triple.rho_satl)
-        # Return mass-weighted sum saturation energies
-        return t * R * T * (
-          x * (phir_t(dsatv, t) + phi0_t(dsatv, t)) \
-          + (1.0-x) * (phir_t(dsatl, t) + phi0_t(dsatl, t)))
-
-    # TODO: Near-critical-point treatment
-    pass
-
-  # Pure phase pressure computation
-  return t * R * T * (phir_t(d, t) + phi0_t(d, t))
-
-def rho_pT(p, T):
-  pass
+  return Pair(out_phir_d, out_phir_dd)

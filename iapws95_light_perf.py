@@ -73,6 +73,16 @@ def print_verification_values():
   print("Max rel difference of phir_fused_all and individual functions: " +
     f"{max(func_reldiff):.5e}.")  
 
+  # Compute internal consistency of phi0_fused_all vs. individual funcs
+  output_phi0_fused = cfuncs.fused_phi0_all(d,t)
+  results0_fused = [output_phi0_fused[key] for key in
+    ["phi0", "phi0_d", "phi0_dd", "phi0_t", "phi0_tt", "phi0_dt"]]
+  func_differences = [abs(results0_fused[i] - results0[i])
+    for i in range(len(results0))]
+  print("Max abs difference of phi0_fused_all and individual functions: " +
+    f"{max(func_differences):.5e}.")
+
+
   print("")
   print("Test case 2: rho = 358 kg m^{-3}, T = 647 K")
   rho = 358
@@ -113,7 +123,16 @@ def print_verification_values():
   print("Max abs difference of phir_fused_all and individual functions: " +
     f"{max(func_differences):.5e}.")
   print("Max rel difference of phir_fused_all and individual functions: " +
-    f"{max(func_reldiff):.5e}.")  
+    f"{max(func_reldiff):.5e}.")
+
+  # Compute internal consistency of phi0_fused_all vs. individual funcs
+  output_phi0_fused = cfuncs.fused_phi0_all(d,t)
+  results0_fused = [output_phi0_fused[key] for key in
+    ["phi0", "phi0_d", "phi0_dd", "phi0_t", "phi0_tt", "phi0_dt"]]
+  func_differences = [abs(results0_fused[i] - results0[i])
+    for i in range(len(results0))]
+  print("Max abs difference of phi0_fused_all and individual functions: " +
+    f"{max(func_differences):.5e}.")
 
 def print_timing():
   ''' Prints timing values as compared to ideal gas computations. '''
@@ -144,17 +163,30 @@ def print_timing():
   t_fr = [timeit.timeit(f, number=N_runs)/N_runs for f in fr_list]
   # Ideal gas for comparison
   t_ig = timeit.timeit(lambda: rho * iapws95_light.R * T, number=N_runs)/N_runs
+  t_ig_sqrt = timeit.timeit(lambda: (rho * T)**0.5, number=N_runs)/N_runs
+  t_ig_noop = timeit.timeit(lambda: None, number=N_runs)/N_runs
 
+  print(f"=== Individual routines ===")
   for name, t in zip(names0, t_f0):
     print(f"{name}      : {t*1e6:.2f} us")
   for name, t in zip(namesr, t_fr):
     print(f"{name}      : {t*1e6:.2f} us")
-  print(f"Ideal gas    : {t_ig * 1e6:.2f} us")
+  print(f"=== Reference ops (pure python) ===")
+  print(f"rho * R * T  : {t_ig * 1e6:.2f} us")
+  print(f"(rho*T)**.5  : {t_ig_sqrt * 1e6:.2f} us")
+  print(f"lambda no-op : {t_ig_noop * 1e6:.2f} us")
 
   # Optimized fused routines
-  t_phir_d_phir_dd = timeit.timeit(
-    lambda: cfuncs.fused_phir_d_phir_dd(d,t), number=N_runs)/N_runs
-  print(f"phir_d+_dd   : {t_phir_d_phir_dd * 1e6:.2f} us")
+  print(f"=== Optimized routines ===")
+  # t_phir_d_phir_dd = timeit.timeit(
+  #   lambda: cfuncs.fused_phir_d_phir_dd(d,t), number=N_runs)/N_runs
+  # print(f"phir_d+_dd   : {t_phir_d_phir_dd * 1e6:.2f} us")
   t_phir_all = timeit.timeit(
     lambda: cfuncs.fused_phir_all(d,t), number=N_runs)/N_runs
   print(f"phir_*       : {t_phir_all * 1e6:.2f} us")
+  t_phi0_all = timeit.timeit(
+    lambda: cfuncs.fused_phi0_all(d,t), number=N_runs)/N_runs
+  print(f"phi0_*       : {t_phi0_all * 1e6:.2f} us")
+  t_phir_d_dd = timeit.timeit(
+    lambda: cfuncs.fused_phir_d_phir_dd(d,t), number=N_runs)/N_runs
+  print(f"phir_d_dd    : {t_phir_d_dd * 1e6:.2f} us")
