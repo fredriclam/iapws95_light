@@ -60,6 +60,19 @@ def print_verification_values():
         -0.581_403_435e1, -0.223_440_737e1, -0.112_176_915e1]
   print_table(ref0, refr)
 
+  # Compute internal consistency of phir_fused_all vs. individual funcs
+  output_phir_fused = cfuncs.fused_phir_all(d,t)
+  resultsr_fused = [output_phir_fused[key] for key in
+    ["phir", "phir_d", "phir_dd", "phir_t", "phir_tt", "phir_dt"]]
+  func_differences = [abs(resultsr_fused[i] - resultsr[i])
+    for i in range(len(resultsr))]
+  func_reldiff = [abs(resultsr_fused[i]/resultsr[i] - 1.0)
+    for i in range(len(resultsr))]
+  print("Max abs difference of phir_fused_all and individual functions: " +
+    f"{max(func_differences):.5e}.")
+  print("Max rel difference of phir_fused_all and individual functions: " +
+    f"{max(func_reldiff):.5e}.")  
+
   print("")
   print("Test case 2: rho = 358 kg m^{-3}, T = 647 K")
   rho = 358
@@ -88,6 +101,19 @@ def print_verification_values():
   refr = [-0.121_202_657e1, -0.714_012_024, 0.475_730_696,
     -0.321_722_501e1, -0.996_029_507e1, -0.133_214_720e1]
   print_table(ref0, refr)
+
+  # Compute internal consistency of phir_fused_all vs. individual funcs
+  output_phir_fused = cfuncs.fused_phir_all(d,t)
+  resultsr_fused = [output_phir_fused[key] for key in
+    ["phir", "phir_d", "phir_dd", "phir_t", "phir_tt", "phir_dt"]]
+  func_differences = [abs(resultsr_fused[i] - resultsr[i])
+    for i in range(len(resultsr))]
+  func_reldiff = [abs(resultsr_fused[i]/resultsr[i] - 1.0)
+    for i in range(len(resultsr))]
+  print("Max abs difference of phir_fused_all and individual functions: " +
+    f"{max(func_differences):.5e}.")
+  print("Max rel difference of phir_fused_all and individual functions: " +
+    f"{max(func_reldiff):.5e}.")  
 
 def print_timing():
   ''' Prints timing values as compared to ideal gas computations. '''

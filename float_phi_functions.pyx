@@ -148,7 +148,20 @@ for i in range(7,51):
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef double pow_fd(double x, int y) noexcept:
-  return pow(x, y)
+  ''' Exponentiation of type double ** int.
+    Input x expected to be strictly positive.'''
+  cdef double out = 1.0
+  if y < 0:
+    x = 1.0 / x
+    y = -y
+  elif y == 0:
+    return 1.0
+  while y > 1:
+    if y % 2:
+      out *= x    # Apply x^(2^i)
+    x *= x        # x^(2^i) -> x^(2^(i+1))
+    y //= 2       # Bit shift
+  return out * x
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
