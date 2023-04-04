@@ -14,6 +14,29 @@ cdef extern from "math.h":
     double log(double x)
     double pow(double x, double y)
 
+''' Load coefficients for the ideal gas part. '''
+# Ideal gas part coefficients: updated values of the 2018 IAPWS Release
+cdef DTYPE_t[8] n_ideal = [-8.3204464837497,  6.6832105275932,  3.00632   ,
+        0.012436  ,  0.97315   ,  1.2795    ,  0.96956   ,  0.24873   ]
+cdef DTYPE_t[8] g_ideal = [ 0.        ,  0.        ,  0.        ,
+        1.28728967,  3.53734222,  7.74073708,  9.24437796, 27.5075105 ]
+''' Load critical properties. '''
+cdef DTYPE_t Tc   = 647.096      # K
+cdef DTYPE_t rhoc = 322          # kg / m^3
+cdef DTYPE_t R    = 0.46151805e3 # J / kg K
+''' Load Saul and Wagner saturation curve correlations. '''
+# Saturated liquid density correlation (Saul and Wagner 1987 Eq. 2.3)
+cdef DTYPE_t[6] satl_powsb = [
+  0.3333333333333333, 0.6666666666666666, 1.6666666666666667,
+  5.333333333333333, 14.333333333333334, 36.666666666666664]
+cdef DTYPE_t[6] satl_coeffsb = [
+  1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
+# Saturated vapour density correlation (Saul and Wagner 1987 Eq. 2.2)
+cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
+  6.16666667, 11.83333333]
+cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
+  -44.6384, -64.3486]
+''' Load coefficients for the residual part. '''
 cdef DTYPE_t[2] a_res55_56 = [3.5, 3.5]
 cdef DTYPE_t[2] A_res55_56 = [0.32, 0.32]
 cdef DTYPE_t[3] alpha_res52_54 = [20., 20., 20.]
@@ -66,6 +89,8 @@ cdef DTYPE_t[56] t_res = [
   9.   ,  8.   , 16.   , 22.   , 23.   , 23.   , 10.   , 50.   ,
   44.   , 46.   , 50.   ,  0.   ,  1.   ,  4.   ,  0.   ,  0.   ]
 cdef DTYPE_t[2] _exp1_55_56 = [1.6666666666666667, 1.6666666666666667]
+
+''' Rearrange coefficients in memory for contiguous memory representations. '''
 # Fused coefficient arrays for 1 to 51 of uniform type.
 #   Coefficients (n, d, t, c) are contiguous in memory.
 # These arrays are used in some earlier implementations.
@@ -82,27 +107,7 @@ for i in range(51):
   ndt1_51[3*i+1] = d_res[i]
   ndt1_51[3*i+2] = t_res[i]
 
-# Ideal gas part coefficients: updated values of the 2018 IAPWS Release
-cdef DTYPE_t[8] n_ideal = [-8.3204464837497,  6.6832105275932,  3.00632   ,
-        0.012436  ,  0.97315   ,  1.2795    ,  0.96956   ,  0.24873   ]
-cdef DTYPE_t[8] g_ideal = [ 0.        ,  0.        ,  0.        ,
-        1.28728967,  3.53734222,  7.74073708,  9.24437796, 27.5075105 ]
-cdef DTYPE_t Tc   = 647.096      # K
-cdef DTYPE_t rhoc = 322          # kg / m^3
-cdef DTYPE_t R    = 0.46151805e3 # J / kg K
-# Saturated liquid density correlation (Saul and Wagner 1987 Eq. 2.3)
-cdef DTYPE_t[6] satl_powsb = [
-  0.3333333333333333, 0.6666666666666666, 1.6666666666666667,
-  5.333333333333333, 14.333333333333334, 36.666666666666664]
-cdef DTYPE_t[6] satl_coeffsb = [
-  1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
-# Saturated vapour density correlation (Saul and Wagner 1987 Eq. 2.2)
-cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
-  6.16666667, 11.83333333]
-cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
-  -44.6384, -64.3486]
-
-''' Output struct types '''
+''' Define output struct types for cdef functions. '''
 # Generic pair
 cdef struct Pair:
   DTYPE_t first
@@ -131,17 +136,23 @@ cdef struct CoeffTriple_ndt_dii:
   int d
   int t
 
+''' Fill type-optimized, memory-contiguous coefficients. '''
 # Fill typed ndt arrays (type suffix did->double int double, ...)
 cdef CoeffTriple_ndt_did[7] typed_ndt_1_7
-cdef CoeffTriple_ndt_dii[44] typed_ndt_8_51
 for i in range(7):
   typed_ndt_1_7[i].n = ndtc1_51[4*i]
   typed_ndt_1_7[i].d = int(ndtc1_51[4*i+1])
   typed_ndt_1_7[i].t = ndtc1_51[4*i+2]
+cdef CoeffTriple_ndt_dii[44] typed_ndt_8_51
 for i in range(7,51):
   typed_ndt_8_51[i-7].n = ndtc1_51[4*i]
   typed_ndt_8_51[i-7].d = int(ndtc1_51[4*i+1])
   typed_ndt_8_51[i-7].t = int(ndtc1_51[4*i+2])
+# Typed t coefficients for 1-index terms 52 to 54
+cdef int[3] t_res_52_54
+for i in range(3):
+  t_res_52_54[i] = int(t_res[51+i])
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -986,13 +997,13 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
-  ''' Optimized routine for simultaneously computing the 0th, 1st and 2nd
-  derivatives of the residual part of dimless Helmholtz function
+  ''' Optimized routine for simultaneously computing all 0th, 1st and 2nd
+  derivatives of the residual part of the dimless Helmholtz function
       phi = f/(RT).
-  See also phir for more details.
-  Cython implementation for float input.
+  Cython implementation for float input. Typical bottlenecks are computation of
+  exp(DTYPE_t, DTYPE_t) and pow(DTYPE_t, DTYPE_t), where DTYPE_t is a floating
+  point representation. 
   '''
-
   cdef DTYPE_t out_phir    = 0.0
   cdef DTYPE_t out_phir_d  = 0.0
   cdef DTYPE_t out_phir_dd = 0.0
@@ -1011,7 +1022,7 @@ cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
   
   # Compute terms with 1-indices 1 to 7 (0-indices 0 to 6)
   for i in range(7):
-    # Compute common factors
+    # Compute common factors, requiring pow(double, double)
     _common = typed_ndt_1_7[i].n * pow_fd(d, typed_ndt_1_7[i].d) \
       * (t ** typed_ndt_1_7[i].t)
     out_phir += _common
@@ -1025,7 +1036,7 @@ cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
       * (typed_ndt_1_7[i].t - 1.0) / (t*t)
     out_phir_dt += _c1 * typed_ndt_1_7[i].t / t
 
-  # Terms with 1-indices 8 to 51 Integer c_coeff optimization
+  # Terms with 1-indices 8 to 51 are unrolled by value of coefficient c_coeff
   #   range(7,22) -> 1
   #   range(22,42) -> 2
   #   range(42,46) -> 3
@@ -1138,7 +1149,7 @@ cpdef Derivatives_0_1_2 fused_phir_all(DTYPE_t d, DTYPE_t t) noexcept:
     _common = n_res[i] * exp(-alpha_res52_54[i-51] * _c1 * _c1 \
       -beta_res52_54[i-51] * _c2 * _c2) \
       * (d * d # unrolled d ** (d_res[i]-1.0)
-        ) * (t ** t_res[i])
+        ) * pow_fd(t, t_res_52_54[i-51])
     # Compute d derivative path
     out_phir += _common * d
     out_phir_d += _common * (d_res[i] \
