@@ -23,10 +23,14 @@ def print_verification_values():
     ''' Prints results0, resultsr (each length 6) into a fixed format table.'''
     print("===============================================")
     for tup in zip(names0, results0, namesr, resultsr):
+      _str_results0 = (round(tup[1], 9) if abs(tup[1]) < 1.0
+        else round(tup[1], 8))
+      _str_resultsr = (round(tup[3], 9) if abs(tup[3]) < 1.0
+        else round(tup[3], 8))
       print(f"{tup[0]} | " +
-        f"{tup[1]:{'.9f' if tup[1] < 0 else ' .9f'}} | " +
+        f"{_str_results0:{'.9f' if tup[1] < 0 else ' .9f'}} | " +
         f"{tup[2]} | " +
-        f"{tup[3]:{'.9f' if tup[3] < 0 else ' .9f'}}")
+        f"{_str_resultsr:{'.9f' if tup[3] < 0 else ' .9f'}}")
   
   print("Test case 1: rho = 838.025 kg m^{-3}, T = 500 K")
   rho = 838.025
@@ -47,7 +51,7 @@ def print_verification_values():
     cfuncs.phir_tt(d,t),
     cfuncs.phir_dt(d,t)]
   # Print results
-  print("Computed: ")
+  print("Computed (rounded to 9 significant figures): ")
   print_table(results0, resultsr)
   print("Reference (9 significant figures): ")
   ref0 = [0.204_797_734e1, 0.384_236_747, -0.147_637_878,
@@ -76,7 +80,7 @@ def print_verification_values():
     cfuncs.phir_tt(d,t),
     cfuncs.phir_dt(d,t)]
   # Print results
-  print("Computed: ")
+  print("Computed (rounded to 9 significant figures): ")
   print_table(results0, resultsr)
   print("Reference (9 significant figures): ")
   ref0 = [-0.156_319_605e1, 0.899_441_341, -0.808_994_726,
@@ -114,13 +118,17 @@ def print_timing():
   t_fr = [timeit.timeit(f, number=N_runs)/N_runs for f in fr_list]
   # Ideal gas for comparison
   t_ig = timeit.timeit(lambda: rho * iapws95_light.R * T, number=N_runs)/N_runs
-  # Optimized fused routines
-  t_phir_d_phir_dd = timeit.timeit(
-    lambda: cfuncs.fused_phir_d_phir_dd(d,t), number=N_runs)/N_runs
 
   for name, t in zip(names0, t_f0):
     print(f"{name}      : {t*1e6:.2f} us")
   for name, t in zip(namesr, t_fr):
     print(f"{name}      : {t*1e6:.2f} us")
   print(f"Ideal gas    : {t_ig * 1e6:.2f} us")
-  print(f"phi_d+_dd    : {t_phir_d_phir_dd * 1e6:.2f} us")
+
+  # Optimized fused routines
+  t_phir_d_phir_dd = timeit.timeit(
+    lambda: cfuncs.fused_phir_d_phir_dd(d,t), number=N_runs)/N_runs
+  print(f"phir_d+_dd   : {t_phir_d_phir_dd * 1e6:.2f} us")
+  t_phir_all = timeit.timeit(
+    lambda: cfuncs.fused_phir_all(d,t), number=N_runs)/N_runs
+  print(f"phir_*       : {t_phir_all * 1e6:.2f} us")
