@@ -28,13 +28,19 @@ cdef DTYPE_t R    = 0.46151805e3 # J / kg K
 cdef DTYPE_t[6] satl_powsb = [
   0.3333333333333333, 0.6666666666666666, 1.6666666666666667,
   5.333333333333333, 14.333333333333334, 36.666666666666664]
+# Rational factorized version
+cdef int[6] satl_powsb_times3 = [
+  1, 2, 5, 16, 43, 110]
 cdef DTYPE_t[6] satl_coeffsb = [
   1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
 # Saturated vapour density correlation (Saul and Wagner 1987 Eq. 2.2)
 cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
   6.16666667, 11.83333333]
+# Rational factorized version
+cdef int[6] satv_powsc_times6 = [2, 4, 8, 18, 37, 71]
 cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
   -44.6384, -64.3486]
+
 ''' Load coefficients for the residual part. '''
 cdef DTYPE_t[2] a_res55_56 = [3.5, 3.5]
 cdef DTYPE_t[2] A_res55_56 = [0.32, 0.32]
@@ -710,14 +716,18 @@ cpdef prho_sat_stepinfo(DTYPE_t T):
   cdef DTYPE_t d0 = 1.0
   cdef DTYPE_t d1 = 0
   cdef DTYPE_t _c0
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
   cdef Pair pair
 
   # Compute initial guess using independent sat curve correlations
   cdef unsigned short i
+  _c0 = 1.0-1.0/t
+  _c1 = _c0**(1.0/6.0)
+  _c2 = _c1 * _c1
   for i in range(6):
-    _c0 = 1.0-1.0/t
-    d0 += satl_coeffsb[i] * _c0**satl_powsb[i]
-    d1 += satv_coeffsc[i] * _c0**satv_powsc[i]
+    d0 += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+    d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
   # Fixed step Newton
   for i in range(3):
@@ -779,13 +789,17 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
   cdef DTYPE_t d0 = 1.0
   cdef DTYPE_t d1 = 0
   cdef DTYPE_t _c0
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
 
   # Compute initial guess using independent sat curve correlations
   cdef unsigned short i
+  _c0 = 1.0-1.0/t
+  _c1 = _c0**(1.0/6.0)
+  _c2 = _c1 * _c1
   for i in range(6):
-    _c0 = 1.0-1.0/t
-    d0 += satl_coeffsb[i] * _c0**satl_powsb[i]
-    d1 += satv_coeffsc[i] * _c0**satv_powsc[i]
+    d0 += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+    d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
   # Fixed step Newton
   for i in range(3):
@@ -811,6 +825,74 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
     step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
     d0 += step0
     d1 += step1
+  # Compute latest function value
+  pair = fused_phir_d_phir_dd(d0, t)
+  _phir_d0 = pair.first
+  _phir_dd0 = pair.second
+  # Return psat, rho_satl, rho_satv, last_newton_step, residual
+  return SatTriple(d0 * (1.0 + d0 * _phir_d0) * rhoc * R * T, \
+    d0 * rhoc, d1 * rhoc)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
+  ''' Version of prho_sat that does not return stepping/convergence
+  info, and only performs one Newton iteration. '''
+  # Compute reciprocal reduced temperature
+  cdef DTYPE_t t = Tc / T
+  if t < 1.0:
+    return SatTriple(-1.0, -1.0, -1.0)
+  elif t == 1.0:
+    # Special case: exactly critical
+    return SatTriple(22.06e6, -1.0, -1.0)
+
+  cdef DTYPE_t _phir_d0
+  cdef DTYPE_t _phir_dd0
+  cdef DTYPE_t _phir_d1
+  cdef DTYPE_t _phir_dd1
+  cdef DTYPE_t _J00, _J01, _J10, _J11, _detJ
+  cdef DTYPE_t f0, f1
+  cdef DTYPE_t step0, step1
+  cdef DTYPE_t d0 = 1.0
+  cdef DTYPE_t d1 = 0
+  cdef DTYPE_t _c0
+  cdef DTYPE_t _c1
+  cdef DTYPE_t _c2
+
+  # Compute initial guess using independent sat curve correlations
+  cdef unsigned short i
+  _c0 = 1.0-1.0/t
+  _c1 = _c0**(1.0/6.0)
+  _c2 = _c1 * _c1
+  for i in range(6):
+    d0 += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+    d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+  d1 = exp(d1)
+
+  # Compute phir_d, phir_dd values
+  pair = fused_phir_d_phir_dd(d0, t)
+  _phir_d0 = pair.first
+  _phir_dd0 = pair.second
+  pair = fused_phir_d_phir_dd(d1, t)
+  _phir_d1 = pair.first
+  _phir_dd1 = pair.second 
+  # Assemble Jacobian for Maxwell residual equation
+  _J00 = -2.0 * _phir_d0 - d0 * _phir_dd0 - phi0_d(d0, t)
+  _J01 = 2.0 * _phir_d1 + d1 * _phir_dd1 + phi0_d(d1, t)
+  _J10 = 1.0 + 2.0 * d0 * _phir_d0 + d0 * d0 * _phir_dd0
+  _J11 = -1.0 - 2.0 * d1 * _phir_d1 - d1 * d1 * _phir_dd1
+  _detJ = _J00 * _J11 - _J01 * _J10
+  # Assemble vector of Maxwell residuals
+  f0 = d1 * _phir_d1 - d0 * _phir_d0 \
+      - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
+  f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
+  # Compute Newton step
+  step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
+  step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
+  d0 += step0
+  d1 += step1
   # Compute latest function value
   pair = fused_phir_d_phir_dd(d0, t)
   _phir_d0 = pair.first
