@@ -131,6 +131,7 @@ cdef struct Derivatives_phir_0_1_2:
   DTYPE_t phir_tt
   DTYPE_t phir_dt
 cdef struct Derivatives_phir_d3:
+  DTYPE_t phir
   DTYPE_t phir_d
   DTYPE_t phir_dd
   DTYPE_t phir_ddd
@@ -841,9 +842,9 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
+cpdef SatTriple prho_sat_fast(DTYPE_t T) noexcept:
   ''' Version of prho_sat that does not return stepping/convergence
-  info, and only performs one Newton iteration. '''
+  info, and only performs one iteration. '''
   # Compute reciprocal reduced temperature
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
@@ -852,10 +853,8 @@ cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
     # Special case: exactly critical
     return SatTriple(22.06e6, -1.0, -1.0)
 
-  cdef DTYPE_t _phir_d0
-  cdef DTYPE_t _phir_dd0
-  cdef DTYPE_t _phir_d1
-  cdef DTYPE_t _phir_dd1
+  cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
+  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
   cdef DTYPE_t _J00, _J01, _J10, _J11, _detJ
   cdef DTYPE_t f0, f1
   cdef DTYPE_t step0, step1
@@ -875,7 +874,11 @@ cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
     d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
 
-  # Compute phir_d, phir_dd values
+  # Compute phi derivative values
+  _phirall_0 = fused_phir_all(d0, t)
+  _phirall_1 = fused_phir_all(d1, t)
+  _phi0all_0 = fused_phi0_all(d0, t)
+  _phi0all_1 = fused_phi0_all(d1, t)
   pair = fused_phir_d_phir_dd(d0, t)
   _phir_d0 = pair.first
   _phir_dd0 = pair.second
@@ -883,15 +886,15 @@ cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
   _phir_d1 = pair.first
   _phir_dd1 = pair.second 
   # Assemble Jacobian for Maxwell residual equation
-  _J00 = -2.0 * _phir_d0 - d0 * _phir_dd0 - phi0_d(d0, t)
-  _J01 = 2.0 * _phir_d1 + d1 * _phir_dd1 + phi0_d(d1, t)
-  _J10 = 1.0 + 2.0 * d0 * _phir_d0 + d0 * d0 * _phir_dd0
-  _J11 = -1.0 - 2.0 * d1 * _phir_d1 - d1 * d1 * _phir_dd1
+  _J00 = -2.0 * _phirall_0.phir_d - d0 * _phirall_0.phir_dd - _phi0all_0.phi0_d
+  _J01 = 2.0 * _phirall_1.phir_d + d1 * _phirall_1.phir_dd + _phi0all_1.phi0_d
+  _J10 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0 * d0 * _phirall_0.phir_dd
+  _J11 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1 * d1 * _phirall_1.phir_dd
   _detJ = _J00 * _J11 - _J01 * _J10
   # Assemble vector of Maxwell residuals
-  f0 = d1 * _phir_d1 - d0 * _phir_d0 \
-      - phir(d0, t) - phi0(d0, t) + phir(d1, t) + phi0(d1, t)
-  f1 = d0 + d0 * d0 * _phir_d0 - d1 - d1 * d1 * _phir_d1
+  f0 = d1 * _phirall_1.phir_d - d0 * _phirall_0.phir_d \
+      - _phirall_0.phir - _phi0all_0.phi0 + _phirall_1.phir + _phi0all_1.phi0
+  f1 = d0 + d0 * d0 * _phirall_0.phir_d - d1 - d1 * d1 * _phirall_1.phir_d
   # Compute Newton step
   step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
   step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
@@ -900,7 +903,6 @@ cpdef SatTriple prho_sat_lowprec(DTYPE_t T) noexcept:
   # Compute latest function value
   pair = fused_phir_d_phir_dd(d0, t)
   _phir_d0 = pair.first
-  _phir_dd0 = pair.second
   # Return psat, rho_satl, rho_satv, last_newton_step, residual
   return SatTriple(d0 * (1.0 + d0 * _phir_d0) * rhoc * R * T, \
     d0 * rhoc, d1 * rhoc)
@@ -1423,16 +1425,16 @@ cpdef Pair fused_phir_d_phir_dd(DTYPE_t d, DTYPE_t t) noexcept:
 
   return Pair(out_phir_d, out_phir_dd)
 
-# @cython.boundscheck(False)
-# @cython.wraparound(False)
-# @cython.nonecheck(False)
-# @cython.cdivision(True)
-cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
-  ''' Optimized routine for simultaneously computing the first three
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t) noexcept:
+  ''' Optimized routine for simultaneously computing the 0th, 1st, 2nd, and 3rd
   d-derivatives of the residual part of the dimless Helmholtz function
       phi = f/(RT).
   '''
-  # cdef DTYPE_t out_phir  = 0.0
+  cdef DTYPE_t out_phir  = 0.0
   cdef DTYPE_t out_phir_d  = 0.0
   cdef DTYPE_t out_phir_dd = 0.0
   cdef DTYPE_t out_phir_ddd = 0.0
@@ -1456,6 +1458,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
     _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
       * pow_fd(d, typed_ndt_1_7[i].d) \
       * (t ** typed_ndt_1_7[i].t) / d
+    out_phir += _c1 * d / typed_ndt_1_7[i].d
     out_phir_d += _c1
     out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
     out_phir_ddd += (typed_ndt_1_7[i].d - 1) * (typed_ndt_1_7[i].d - 2) \
@@ -1464,6 +1467,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
     _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
       * pow_fd(d, typed_ndt_1_7[i].d) \
       * t / d
+    out_phir += _c1 * d / typed_ndt_1_7[i].d
     out_phir_d += _c1
     out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
     out_phir_ddd += (typed_ndt_1_7[i].d - 1) * (typed_ndt_1_7[i].d - 2) \
@@ -1472,6 +1476,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
     _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
       * pow_fd(d, typed_ndt_1_7[i].d) \
       * (t ** typed_ndt_1_7[i].t) / d
+    out_phir += _c1 * d / typed_ndt_1_7[i].d
     out_phir_d += _c1
     out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
     out_phir_ddd += (typed_ndt_1_7[i].d - 1) * (typed_ndt_1_7[i].d - 2) \
@@ -1480,6 +1485,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
     _c1 = typed_ndt_1_7[i].d * typed_ndt_1_7[i].n \
       * pow_fd(d, typed_ndt_1_7[i].d) \
       * t / d
+    out_phir += _c1 * d / typed_ndt_1_7[i].d
     out_phir_d += _c1
     out_phir_dd += (typed_ndt_1_7[i].d - 1) * _c1 / d
     out_phir_ddd += (typed_ndt_1_7[i].d - 1) * (typed_ndt_1_7[i].d - 2) \
@@ -1503,6 +1509,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
     # Compute first d-derivative operator
     _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
     out_phir_d += _common * _c4
     out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
     # Compute d/dd (_c4)
@@ -1524,6 +1531,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
     # Compute first d-derivative operator
     _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
     out_phir_d += _common * _c4
     out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
     # Compute d/dd (_c4)
@@ -1545,6 +1553,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
     # Compute first d-derivative operator
     _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
     out_phir_d += _common * _c4
     out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
     # Compute d/dd (_c4)
@@ -1567,6 +1576,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
     # Compute first d-derivative operator
     _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
     out_phir_d += _common * _c4
     out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
     # Compute d/dd (_c4)
@@ -1589,6 +1599,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * pow_fd(d, typed_ndt_8_51[i].d) * pow_fd(t, typed_ndt_8_51[i].t) * _c2
     # Compute first d-derivative operator
     _c4 = (typed_ndt_8_51[i].d + _c_coeff * _c1) / d
+    out_phir += _common
     out_phir_d += _common * _c4
     out_phir_dd += _common * (_c4 * (_c4 - 1.0/d) + _c3)
     # Compute d/dd (_c4)
@@ -1625,6 +1636,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       * (d * d # unrolled d ** (d_res[i]-1.0)
         ) * pow_fd(t, t_res_52_54[i-51])
     # Compute d derivative path
+    out_phir += _common * d
     out_phir_d += _common * _c4
     out_phir_dd += _common * _c5
     out_phir_ddd += _common * ((_c4 - 1) / d * _c5 + _c6)
@@ -1637,7 +1649,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
   cdef DTYPE_t _ddDelta
   cdef DTYPE_t _dddDelta
   _c1 = d_quad ** (2.0 / 3.0) # d ** (1/(2 *beta) - 1)
-  _c2 = d_quad ** (2.5) # d ** (a - 1)   TODO: use int pow
+  _c2 = d_quad ** 2.5 # d ** (a - 1) # not equivalent to pow_fd
   _theta = (1.0 - t) + A_res55_56[0] * _c1 * d_quad
   _Delta = _theta*_theta + B_res55_56[0] * _c2 * d_quad
   # Compute d(Delta)/d(delta) divided by (delta - 1.0) for numerical stability
@@ -1679,6 +1691,8 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
       _common *= _Delta ** (b_res55_56[i-54] - 2.0) # 0.85 to 0.95
     else:
       _common = 0.0
+    # Compute phir term
+    out_phir += _common * _Delta * _Delta * d
     # Compute phir_d term
     out_phir_d += _common * _Delta * (
       _Delta * (1.0 - 2.0 * C_res55_56[i-54] * (d-1.0) * d)
@@ -1716,7 +1730,7 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t): # noexcept:
           )
         )
 
-  return Derivatives_phir_d3(out_phir_d, out_phir_dd, out_phir_ddd)
+  return Derivatives_phir_d3(out_phir, out_phir_d, out_phir_dd, out_phir_ddd)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
