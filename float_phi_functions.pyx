@@ -844,7 +844,7 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
 @cython.cdivision(True)
 cpdef SatTriple prho_sat_fast(DTYPE_t T) noexcept:
   ''' Version of prho_sat that does not return stepping/convergence
-  info, and only performs one iteration. '''
+  info, and only performs one Newton iteration. '''
   # Compute reciprocal reduced temperature
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
@@ -1433,6 +1433,8 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t) noexcept:
   ''' Optimized routine for simultaneously computing the 0th, 1st, 2nd, and 3rd
   d-derivatives of the residual part of the dimless Helmholtz function
       phi = f/(RT).
+  This routine may be useful for performing pressure-equilibrium calculations
+  that require faster asymptotic convergence than Newton's method.
   '''
   cdef DTYPE_t out_phir  = 0.0
   cdef DTYPE_t out_phir_d  = 0.0
