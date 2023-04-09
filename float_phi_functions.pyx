@@ -735,7 +735,7 @@ cpdef prho_sat_stepinfo(DTYPE_t T):
     d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
   # Fixed step Newton
-  for i in range(3):
+  for i in range(12):
     # Compute phir_d, phir_dd values
     pair = fused_phir_d_phir_dd(d0, t)
     _phir_d0 = pair.first
@@ -807,7 +807,7 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
     d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
   # Fixed step Newton
-  for i in range(3):
+  for i in range(12):
     # Compute phir_d, phir_dd values
     pair = fused_phir_d_phir_dd(d0, t)
     _phir_d0 = pair.first
@@ -830,6 +830,8 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
     step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
     d0 += step0
     d1 += step1
+    if step0*step0 + step1*step1 < 1e-18: # square norm step comparison
+      break
   # Compute latest function value
   pair = fused_phir_d_phir_dd(d0, t)
   _phir_d0 = pair.first
@@ -843,8 +845,13 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cpdef SatTriple prho_sat_fast(DTYPE_t T) noexcept:
-  ''' Version of prho_sat that does not return stepping/convergence
-  info, and only performs one Newton iteration. '''
+  ''' Returns pressure, saturation density computed using a predictor-corrector
+  Newton iteration. One iteration is performed, and then the saturation
+  pressure is computed using an additional call to compute phir_d.
+  Does not return stepping/convergence info, but is expected to produce relative
+  error in densities of 1e-7 up to Tc - 1 K; and relative error in saturation
+  pressure of 1e-7 above -5 deg C. Error can be improved by using additional
+  iterations. '''
   # Compute reciprocal reduced temperature
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
@@ -854,8 +861,10 @@ cpdef SatTriple prho_sat_fast(DTYPE_t T) noexcept:
     return SatTriple(22.06e6, -1.0, -1.0)
 
   cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
-  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
+  cdef Derivatives_phir_d3 _phirall_0, _phirall_1
   cdef DTYPE_t _J00, _J01, _J10, _J11, _detJ
+  cdef DTYPE_t _J00_update, _J01_update, _J10_update, _J11_update
+  cdef DTYPE_t _phir_d0
   cdef DTYPE_t f0, f1
   cdef DTYPE_t step0, step1
   cdef DTYPE_t d0 = 1.0
@@ -874,32 +883,44 @@ cpdef SatTriple prho_sat_fast(DTYPE_t T) noexcept:
     d1 += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
   d1 = exp(d1)
 
-  # Compute phi derivative values
-  _phirall_0 = fused_phir_all(d0, t)
-  _phirall_1 = fused_phir_all(d1, t)
-  _phi0all_0 = fused_phi0_all(d0, t)
-  _phi0all_1 = fused_phi0_all(d1, t)
-  pair = fused_phir_d_phir_dd(d0, t)
-  _phir_d0 = pair.first
-  _phir_dd0 = pair.second
-  pair = fused_phir_d_phir_dd(d1, t)
-  _phir_d1 = pair.first
-  _phir_dd1 = pair.second 
-  # Assemble Jacobian for Maxwell residual equation
-  _J00 = -2.0 * _phirall_0.phir_d - d0 * _phirall_0.phir_dd - _phi0all_0.phi0_d
-  _J01 = 2.0 * _phirall_1.phir_d + d1 * _phirall_1.phir_dd + _phi0all_1.phi0_d
-  _J10 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0 * d0 * _phirall_0.phir_dd
-  _J11 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1 * d1 * _phirall_1.phir_dd
-  _detJ = _J00 * _J11 - _J01 * _J10
-  # Assemble vector of Maxwell residuals
-  f0 = d1 * _phirall_1.phir_d - d0 * _phirall_0.phir_d \
-      - _phirall_0.phir - _phi0all_0.phi0 + _phirall_1.phir + _phi0all_1.phi0
-  f1 = d0 + d0 * d0 * _phirall_0.phir_d - d1 - d1 * d1 * _phirall_1.phir_d
-  # Compute Newton step
-  step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
-  step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
-  d0 += step0
-  d1 += step1
+  for i in range(1):
+    # Compute phi derivative values
+    _phirall_0 = fused_phir_d3(d0, t)
+    _phirall_1 = fused_phir_d3(d1, t)
+    _phi0all_0 = fused_phi0_all(d0, t)
+    _phi0all_1 = fused_phi0_all(d1, t)
+    # Assemble Jacobian for Maxwell residual equation
+    _J00 = -2.0 * _phirall_0.phir_d - d0 * _phirall_0.phir_dd - _phi0all_0.phi0_d
+    _J01 = 2.0 * _phirall_1.phir_d + d1 * _phirall_1.phir_dd + _phi0all_1.phi0_d
+    _J10 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0 * d0 * _phirall_0.phir_dd
+    _J11 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1 * d1 * _phirall_1.phir_dd
+    _detJ = _J00 * _J11 - _J01 * _J10
+    # Assemble vector of Maxwell residuals
+    f0 = d1 * _phirall_1.phir_d - d0 * _phirall_0.phir_d \
+        - _phirall_0.phir - _phi0all_0.phi0 + _phirall_1.phir + _phi0all_1.phi0
+    f1 = d0 + d0 * d0 * _phirall_0.phir_d - d1 - d1 * d1 * _phirall_1.phir_d
+    # Compute Newton step
+    step0 = -( _J11 * f0 - _J01 * f1) / (_detJ)
+    step1 = -(-_J10 * f0 + _J00 * f1) / (_detJ)
+    # Corrector step for Jacobian using gradient of Maxwell residual equation
+    _J00_update = (-3.0 * _phirall_0.phir_dd - d0 * _phirall_0.phir_ddd \
+      - _phi0all_0.phi0_dd) * step0
+    _J10_update = (2.0 * _phirall_0.phir_d + 4.0 * d0 * _phirall_0.phir_dd \
+      + d0*d0*_phirall_0.phir_ddd) * step0
+    _J01_update = (3.0 * _phirall_1.phir_dd + d1 * _phirall_1.phir_ddd \
+      + _phi0all_1.phi0_dd) * step1
+    _J11_update = (-2.0 * _phirall_1.phir_d - 4.0 * d1 * _phirall_1.phir_dd \
+      - d1*d1*_phirall_1.phir_ddd) * step1
+    # Assemble updated inverse Jacobian
+    _J00 += _J00_update
+    _J01 += _J01_update
+    _J10 += _J10_update
+    _J11 += _J11_update
+    _detJ = _J00 * _J11 - _J01 * _J10
+    # Use average of predictor and corrector step
+    d0 += 0.5 * (step0 + -( _J11 * f0 - _J01 * f1) / (_detJ))
+    d1 += 0.5 * (step1 + -(-_J10 * f0 + _J00 * f1) / (_detJ))
+
   # Compute latest function value
   pair = fused_phir_d_phir_dd(d0, t)
   _phir_d0 = pair.first
@@ -1739,10 +1760,11 @@ cpdef Derivatives_phir_d3 fused_phir_d3(DTYPE_t d, DTYPE_t t) noexcept:
 @cython.nonecheck(False)
 @cython.cdivision(True)
 def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  ''' Pressure (SI -- Pa). '''
   cdef DTYPE_t d = rho / rhoc
   cdef DTYPE_t t = Tc / T
   cdef DTYPE_t _phir_d, _phir_dd
-  cdef DTYPE_t _c0
+  cdef DTYPE_t _c0, _c1, _c2
   cdef DTYPE_t dsatl = 1.0
   cdef DTYPE_t dsatv = 0
   cdef DTYPE_t sat_atol = 0.5e-2
@@ -1752,16 +1774,18 @@ def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
   # Compute approximate saturation curve
   cdef unsigned short i
   if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
     for i in range(6):
-      _c0 = 1.0-1.0/t
-      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
-      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
     dsatv = exp(dsatv)
 
     # Check if in or near phase equilibrium region
     if d < dsatl + sat_atol and d > dsatv - sat_atol:
       # Compute precise saturation curve and saturation pressure
-      sat_triple = prho_sat(T)
+      sat_triple = prho_sat_fast(T)
       if d <= sat_triple.rho_satl / rhoc and d >= sat_triple.rho_satv / rhoc:
         return sat_triple.psat
 
@@ -1771,7 +1795,6 @@ def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
   # Pure phase pressure computation
   pair = fused_phir_d_phir_dd(d, t)
   _phir_d = pair.first
-  _phir_dd = pair.second
   return rho * R * T * (1.0 + d * _phir_d)
 
 @cython.boundscheck(False)
@@ -1789,20 +1812,21 @@ def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
   cdef SatTriple sat_triple
   cdef DTYPE_t x
 
-
   # Compute approximate saturation curve
   cdef unsigned short i
   if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
     for i in range(6):
-      _c0 = 1.0-1.0/t
-      dsatl += satl_coeffsb[i] * _c0**satl_powsb[i]
-      dsatv += satv_coeffsc[i] * _c0**satv_powsc[i]
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
     dsatv = exp(dsatv)
 
     # Check if in or near phase equilibrium region
     if d < dsatl + sat_atol and d > dsatv - sat_atol:
       # Compute precise saturation curve and saturation pressure
-      sat_triple = prho_sat(T)
+      sat_triple = prho_sat_fast(T)
       dsatl = sat_triple.rho_satl / rhoc
       dsatv = sat_triple.rho_satv / rhoc
       if d <= dsatl and d >= dsatv:
