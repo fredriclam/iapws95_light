@@ -24,22 +24,24 @@ cdef DTYPE_t Tc   = 647.096      # K
 cdef DTYPE_t rhoc = 322          # kg / m^3
 cdef DTYPE_t R    = 0.46151805e3 # J / kg K
 ''' Load Saul and Wagner saturation curve correlations. '''
-# Saturated liquid density correlation (Saul and Wagner 1987 Eq. 2.3)
+# Saturated liquid density correlation (updated from Saul and Wagner 1987
+# Eq. 2.3 to IAPWS95 auxiliary equation calibrated to ITS-90)
 cdef DTYPE_t[6] satl_powsb = [
   0.3333333333333333, 0.6666666666666666, 1.6666666666666667,
   5.333333333333333, 14.333333333333334, 36.666666666666664]
 # Rational factorized version
 cdef int[6] satl_powsb_times3 = [
   1, 2, 5, 16, 43, 110]
-cdef DTYPE_t[6] satl_coeffsb = [
-  1.99206, 1.10123, -5.12506e-1, -1.75263, -45.4485, -6.75615e5]
-# Saturated vapour density correlation (Saul and Wagner 1987 Eq. 2.2)
+cdef DTYPE_t[6] satl_coeffsb = [1.992_740_64, 1.099_653_42, -0.510_839_303,
+  -1.754_934_79, -45.517_035_2, -6.746_944_50e5]
+# Saturated vapour density correlation (updated from Saul and Wagner 1987
+# Eq. 2.3 to IAPWS95 auxiliary equation calibrated to ITS-90)
 cdef DTYPE_t[6] satv_powsc = [0.33333333, 0.66666667, 1.33333333, 3.0,
   6.16666667, 11.83333333]
 # Rational factorized version
 cdef int[6] satv_powsc_times6 = [2, 4, 8, 18, 37, 71]
-cdef DTYPE_t[6] satv_coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151,
-  -44.6384, -64.3486]
+cdef DTYPE_t[6] satv_coeffsc = [-2.031_502_40, -2.683_029_40, -5.386_264_92,
+  -17.299_160_5, -44.758_658_1, -63.920_106_3]
 
 ''' Load coefficients for the residual part. '''
 cdef DTYPE_t[2] a_res55_56 = [3.5, 3.5]
@@ -1805,7 +1807,7 @@ def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
   ''' Energy per unit mass (SI -- J / kg). '''
   cdef DTYPE_t d = rho / rhoc
   cdef DTYPE_t t = Tc / T
-  cdef DTYPE_t _c0
+  cdef DTYPE_t _c0, _c1, _c2
   cdef DTYPE_t dsatl = 1.0
   cdef DTYPE_t dsatv = 0
   cdef DTYPE_t sat_atol = 0.5e-2
@@ -1870,7 +1872,55 @@ cpdef Derivatives_phi0_0_1_2 fused_phi0_all(DTYPE_t d, DTYPE_t t) noexcept:
   # Initializer list: DTYPE_t phi0, phi0_d, phi0_dd,  phi0_t, phi0_tt, phi0_dt
   return Derivatives_phi0_0_1_2(phi0, 1.0/d, -1.0/(d*d), phi0_t, phi0_tt, 0.0)
 
+''' Test functions. '''
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+@cython.inline
+cdef void add_term(DTYPE_t* psum, DTYPE_t* summand, DTYPE_t* comp) noexcept:
+  ''' Adds summand to psum, with compensation value comp. Updates comp. '''
+  # Compute tentative output value
+  cdef DTYPE_t tentative = psum[0] + summand[0] + comp[0]
+  # Compute new compensation value
+  comp[0] = (summand[0] + comp[0]) - (tentative - psum[0])
+  # Assign tentative output value to partial sum
+  psum[0] = tentative
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef double summation_test() noexcept:
+  ''' Test of Kahan summation in simple test case. '''
+  cdef DTYPE_t x = 1.0
+  cdef DTYPE_t y = 1e17
+  cdef DTYPE_t z = 0.0
+  cdef DTYPE_t comp = 0
+  # Intention:
+  # z += y
+  # z += x
+  # z -= y
+  # Stable summation:
+  # tent = z + y + comp            # 1e17
+  # comp = (y + comp) - (tent - z) # 1e17 - 1e17 == 0
+  # z = tent                       # 1e17
+  # tent = z + x + comp            # 1e17+1+0 == 1e17
+  # comp = (x + comp) - (tent - z) # 1 - (1e17 - 1e17) == 1
+  # z = tent                       # 1e17
+  # tent = z + -y + comp           # 1e17 - 1e17 + 1 == 1
+  # comp = (-y + comp) - (tent - z)# (-1e17 + 1) - (1 - 1e17) == 0
+  # z = tent                       # 1
+  add_term(&z, &y, &comp)
+  add_term(&z, &x, &comp)
+  y = -y
+  add_term(&z, &y, &comp)
+  
+  return z
+
 ''' Legacy functions. '''
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -2322,3 +2372,4 @@ cpdef Pair _fused_phir_d_phir_dd_clean(DTYPE_t d, DTYPE_t t) noexcept:
     out_phir_dd += _c1 * _common
 
   return Pair(out_phir_d, out_phir_dd)
+
