@@ -10,6 +10,18 @@ setup(
   ext_modules = cythonize(["float_phi_functions.pyx"], language_level="3")
 )
 
+# # Optimize only O1
+# from distutils.extension import Extension
+# extensions = [
+#   Extension("float_phi_functions",
+#   ["float_phi_functions.pyx"],
+#   extra_compile_args=["/O1"])
+# ]
+# 
+# setup(
+#     ext_modules = cythonize(extensions)
+# )
+
 # from distutils.core import setup
 # from Cython.Build import cythonize
 # from Cython.Compiler.Options import directive_defaults

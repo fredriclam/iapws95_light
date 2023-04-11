@@ -74,6 +74,9 @@ d_satv = lambda t: np.exp(np.dot((1.0-1.0/t)**_powsc, _coeffsc))
 Tc = 647.096  # K
 rhoc = 322    # kg / m^3
 R = 0.46151805 * 1e3 # J / kg K
+Ttriple = 273.16 # K (definition ITS-90)
+ptriple = 611.657 # Pa
+pc = 22.064
 # Generic precomputation
 _exp1_55_56 = 0.5 / (beta_res55_56)
 
