@@ -20,6 +20,7 @@ K = 10e9
 p_m0 = 5e6
 rho_m0 = 2.7e3
 v_m0 = 1.0 / rho_m0
+c_v_m0 = 3e3
 # Set range of pressures
 p_min = 1e2
 p_max = 1e9

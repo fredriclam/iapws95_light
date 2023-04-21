@@ -71,12 +71,14 @@ _coeffsc = [-2.02957, -2.68781, -5.38107, -17.3151, -44.6384, -64.3486]
 d_satv = lambda t: np.exp(np.dot((1.0-1.0/t)**_powsc, _coeffsc))
 
 ''' Set up static parameters '''
-Tc = 647.096  # K
-rhoc = 322    # kg / m^3
-R = 0.46151805 * 1e3 # J / kg K
-Ttriple = 273.16 # K (definition ITS-90)
-ptriple = 611.657 # Pa
-pc = 22.064
+Tc = 647.096               # K
+rhoc = 322.                # kg / m^3
+R = 0.461_518_05e3         # J / kg K
+Ttriple = 273.16           # K (definition ITS-90)
+rhol_triple = 999.793      # kg/m^3
+rhov_triple = 0.004_854_58 # kg/m^3
+ptriple = 611.654_771      # Pa (2018 revised release)
+pc = 22.064e6              # Pa
 # Generic precomputation
 _exp1_55_56 = 0.5 / (beta_res55_56)
 

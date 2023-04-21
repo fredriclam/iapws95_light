@@ -2094,6 +2094,9 @@ cpdef prho_sat_stepinfo(DTYPE_t T):
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
     return None, None, None, [0.0, 0.0], [0.0, 0.0]
+  elif T < 273.16:
+    # Special case: below triple point
+    return SatTriple(-1.0, -1.0, -1.0)
   elif t == 1.0:
     # Special case: exactly critical
     return pc, None, None, [0.0, 0.0], [0.0, 0.0]
@@ -2167,6 +2170,9 @@ cpdef SatTriple prho_sat_newton(DTYPE_t T) noexcept:
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
     return SatTriple(-1.0, -1.0, -1.0)
+  elif T < 273.16:
+    # Special case: below triple point
+    return SatTriple(-1.0, -1.0, -1.0)
   elif t == 1.0:
     # Special case: exactly critical
     return SatTriple(pc, -1.0, -1.0)
@@ -2235,6 +2241,9 @@ cpdef SatTriple prho_sat(DTYPE_t T) noexcept:
   # Compute reciprocal reduced temperature
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
+    return SatTriple(-1.0, -1.0, -1.0)
+  elif T < 273.16:
+    # Special case: below triple point
     return SatTriple(-1.0, -1.0, -1.0)
   elif t == 1.0:
     # Special case: exactly critical
@@ -2316,6 +2325,9 @@ cpdef Pair rho_sat(DTYPE_t T) noexcept:
   cdef DTYPE_t t = Tc / T
   if t < 1.0:
     return Pair(-1.0, -1.0)
+  elif T < 273.16:
+    # Special case: below triple point
+    return Pair(-1.0, -1.0)
   elif t == 1.0:
     # Special case: exactly critical
     return Pair(-1.0, -1.0)
@@ -2376,8 +2388,8 @@ cpdef Pair rho_sat(DTYPE_t T) noexcept:
     d0 += 0.5 * (step0 + -( _J11 * f0 - _J01 * f1) / (_detJ))
     d1 += 0.5 * (step1 + -(-_J10 * f0 + _J00 * f1) / (_detJ))
 
-  # Return d0 (d_satl) and d1 (d_satv)
-  return Pair(d0, d1)
+  # Return rho_satl and rho_satv
+  return Pair(rhoc*d0, rhoc*d1)
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -4233,6 +4245,53 @@ def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
 
   # Pure phase pressure computation
   return t * R * T * (fused_phir_all(d, t).phir_t + phi0_t(d, t))
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def c_v(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+  ''' Specific heat (SI -- J / (kg K) ). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef DTYPE_t x
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+        # Return mass-weighted sum saturation energies
+        return -t * t * R * (
+          x * (fused_phir_all(dsatv, t).phir_tt + phi0_tt(dsatv, t)) \
+          + (1.0-x) * (fused_phir_all(dsatl, t).phir_tt + phi0_tt(dsatl, t)))
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  return -t * t * R * (fused_phir_all(d, t).phir_tt + phi0_tt(d, t))
 
 def rho_pT(p, T):
   pass
