@@ -6,3 +6,7 @@ float_phi_functions.html
 float_phir_dd.c
 single_phi_functions.c
 single_phi_functions*.pyd
+float_mix_functions.c
+float_mix_functions*.pyd
+float_mix_functions.html
+

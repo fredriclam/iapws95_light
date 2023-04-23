@@ -6,8 +6,19 @@ from Cython.Build import cythonize
 # directive_defaults['linetrace'] = True
 # directive_defaults['binding'] = True
 
+# setup(
+#   ext_modules = cythonize(["float_phi_functions.pyx"], language_level="3")
+# )
+
+from distutils.extension import Extension
+extensions = [
+  Extension("float_phi_functions",
+    ["float_phi_functions.pyx"]), 
+  Extension("float_mix_functions",
+    ["float_mix_functions.pyx"]), 
+]
 setup(
-  ext_modules = cythonize(["float_phi_functions.pyx"], language_level="3")
+    ext_modules = cythonize(extensions)
 )
 
 # # Optimize only O1

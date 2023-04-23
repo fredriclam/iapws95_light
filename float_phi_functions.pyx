@@ -22,6 +22,7 @@ cdef DTYPE_t[8] g_ideal = [ 0.        ,  0.        ,  0.        ,
 ''' Load critical properties. '''
 cdef DTYPE_t Tc   = 647.096      # K
 cdef DTYPE_t rhoc = 322          # kg / m^3
+cdef DTYPE_t vc   = 1.0 / rhoc
 cdef DTYPE_t R    = 0.46151805e3 # J / kg K
 cdef DTYPE_t pc   = 22.064e6     # MPa
 ''' Load Saul and Wagner saturation curve correlations. '''
@@ -4161,7 +4162,7 @@ cpdef DTYPE_t rhosatv_aux(DTYPE_t T) noexcept:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+cpdef DTYPE_t p(DTYPE_t rho, DTYPE_t T):
   ''' Pressure (SI -- Pa). '''
   cdef DTYPE_t d = rho / rhoc
   cdef DTYPE_t t = Tc / T
@@ -4203,7 +4204,7 @@ def p(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+cpdef DTYPE_t u(DTYPE_t rho, DTYPE_t T):
   ''' Energy per unit mass (SI -- J / kg). '''
   cdef DTYPE_t d = rho / rhoc
   cdef DTYPE_t t = Tc / T
@@ -4250,7 +4251,7 @@ def u(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-def c_v(DTYPE_t rho, DTYPE_t T) -> DTYPE_t:
+cpdef DTYPE_t c_v(DTYPE_t rho, DTYPE_t T):
   ''' Specific heat (SI -- J / (kg K) ). '''
   cdef DTYPE_t d = rho / rhoc
   cdef DTYPE_t t = Tc / T
