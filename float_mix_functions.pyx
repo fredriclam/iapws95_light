@@ -1,13 +1,26 @@
+#cython: language_level=3
+
 cimport cython
 include "float_phi_functions.pyx"
 # Inclusion replaces:
-# #cython: language_level=3
 # ctypedef double DTYPE_t
+
+'''
+TODO: Return temperature as well as pressure
+Proof Cython implementation, add no-checks for runtime opt
+Reduce redunant phi computation
+Add initial guess low-order model
+Optimize slowest path
+Tolerance as an arg,
+Try with, without trust region
+'''
 
 cdef extern from "math.h":
   double exp(double x)
   double log(double x)
-  double abs(double x)
+  double fabs(double x)
+  double min(double x, double y)
+  double max(double x, double y)
 
 ''' Estimate initial temperature '''
 # Set liquid linearization point
@@ -37,6 +50,10 @@ cpdef DTYPE_t magma_mech_energy(DTYPE_t p,
   # Return energy shifted by energy at zero pressure
   return K / rho_m0 * (u - log(1.0 + u)) - p_m0 / rho_m0 * u - e_m0
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cpdef Pair pure_phase_newton_pair(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0):
   ''' Returns Pair<value, slope> for Newton iteration of the pure phase volume-
@@ -71,7 +88,7 @@ cpdef DTYPE_t linear_energy_model(DTYPE_t T, DTYPE_t yw, DTYPE_t ym,
 
 # @cython.boundscheck(False)
 # @cython.wraparound(False)
-# @cython.nonecheck(False)
+@cython.nonecheck(False)
 @cython.cdivision(True)
 cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0):
@@ -89,10 +106,10 @@ cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
   cdef Derivatives_phir_0_1_2 _phirall
   cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
-  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv
+  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
   cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
   cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w
-  cdef DTYPE_t _c1, Z, Z_d, d1psi, d2psi, drhowdT, drhomdT
+  cdef DTYPE_t _c1, Z, Z_d, d1psi, d2psi, drhowdT, rhom, drhomdT
   # Root-finding parameters
   cdef unsigned int i = 0
   cdef unsigned int MAX_NEWTON_ITERS = 64
@@ -290,8 +307,8 @@ cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + ym * (c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0))
       # Temperature migration
       dT = -(curr_energy - vol_energy/rho_mix)/dedT
-      if abs(dT) > 100.0:
-        dT *= 100.0/abs(dT)
+      # Limit to dT <= 100
+      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
@@ -303,8 +320,7 @@ cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Update water phasic density
       rhow = d * rhoc
     # Clip temperatures below the triple point temperature
-    if T < 273.16:
-      T = 273.16
+    T = max(T, 273.16)
     if dT * dT < 1e-9 * 1e-9:
       break
   return pmix
@@ -546,8 +562,8 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Penalize large steps (trust region)
       trust_region_size = 1e8
       dT = -(curr_energy - vol_energy/rho_mix)/(dedT + 1e6/trust_region_size)
-      if abs(dT) > 100:
-        dT *= 100/abs(dT)
+      # Limit to dT <= 100
+      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
 
       # Extrapolation cut
       # if case_str == "iter-subcrit":
@@ -566,8 +582,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       rhow = d * rhoc
     
     # Clip temperatures below the triple point temperature
-    if T < 273.16:
-      T = 273.16
+    T = max(T, 273.16)
 
     # Append output
     iteration_path.append((pmix, d*rhoc, T, case_str))
