@@ -36,11 +36,68 @@ cdef DTYPE_t rho_gas_ref = 0.5981697919259701 # float_phi_functions.prho_sat(273
 cdef DTYPE_t e_gas_ref = 2506022.7123141396 # float_phi_functions.u(rho_gas_ref, 273.15+100)
 cdef DTYPE_t c_v_gas_ref = 1555.8307465765565 # float_phi_functions.c_v(rho_gas_ref, 273.15+100)
 
+cdef struct TriplerhopT:
+  DTYPE_t rhow
+  DTYPE_t p
+  DTYPE_t T
+
+# Regression weights for estimating T(yw, vol_energy, rho_mix) in the form
+cdef DTYPE_t[12] static_regression_weights = [
+  115.921763310165275, -316.916654834257770, 124.876068728982972,
+  -111.538568414603972, 68.024491357232435, -211.349261918711562,
+  12.208660020549521, 60.443940920122770, 183.657082274465807,
+  37.811498814731365, 72.941538305957451, -7.341630723542266,]
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t poly_T_residual_est(
+    DTYPE_t yw, DTYPE_t vol_energy, DTYPE_t rho_mix) noexcept:  
+  ''' Estimate residual based on a posteriori regression for reference magma
+  parameters. '''
+  cdef DTYPE_t x0 = yw
+  cdef DTYPE_t x1 = vol_energy/rho_mix / 1e6 
+  cdef DTYPE_t x2 = rho_mix / 1e3
+  return static_regression_weights[0]\
+    + static_regression_weights[1]*x0 \
+    + static_regression_weights[2]*x1 \
+    + static_regression_weights[3]*x2 \
+    + static_regression_weights[4]*x0*x0 \
+    + static_regression_weights[5]*x1*x1 \
+    + static_regression_weights[6]*x2*x2 \
+    + static_regression_weights[7]*x0*x1 \
+    + static_regression_weights[8]*x0*x2 \
+    + static_regression_weights[9]*x1*x2 \
+    + static_regression_weights[10]*x1*x1*x1 \
+    + static_regression_weights[11]*x1*x1*x1*x1
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t linear_T_est(DTYPE_t yw, DTYPE_t vol_energy, DTYPE_t rho_mix,
+  DTYPE_t c_v_m0):
+  cdef DTYPE_t ym = 1.0 - yw
+  cdef DTYPE_t T
+  if rho_mix < 10.0:
+    # Due to an issue with flip-flopping for a low-density gas:
+    T = ((vol_energy / rho_mix) - yw * (e_gas_ref - c_v_gas_ref * T_gas_ref)) \
+    / (yw * c_v_gas_ref + ym * c_v_m0)
+  else:
+    # Estimate temperature
+    T = ((vol_energy / rho_mix) - yw * (e_w0 - c_v_w0 * T_w0)) \
+      / (yw * c_v_w0 + ym * c_v_m0)
+  return T
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cpdef DTYPE_t magma_mech_energy(DTYPE_t p, 
   DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0):
   ''' Mechanical component of internal energy as integral -p dv.
   First term is -(p-p0)dv, and second is -p0 dv, third is shift. '''
-
   # Nondimensional variable (for zero pressure)
   cdef DTYPE_t u0 = p_m0 / (K - p_m0)
   # Evaluate energy at zero pressure
@@ -90,7 +147,7 @@ cpdef DTYPE_t linear_energy_model(DTYPE_t T, DTYPE_t yw, DTYPE_t ym,
 # @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
+cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0):
   ''' Map conservative mixture variables to pressure, temperature.
   Production version. '''
@@ -125,6 +182,9 @@ cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
     # Estimate temperature
     T = ((vol_energy / rho_mix) - yw * (e_w0 - c_v_w0 * T_w0)) \
       / (yw * c_v_w0 + ym * c_v_m0)
+    # if yw >= 0.2:
+    #   # Refine estimate using a posteriori approximation of residual
+    #   T += poly_T_residual_est(yw, vol_energy, rho_mix)
   # One-step Newton approximation of critical-temperature value
   d = 1.0
   out_pair = pure_phase_newton_pair(d, Tc, rho_mix, yw, K, p_m0, rho_m0)
@@ -323,9 +383,9 @@ cpdef DTYPE_t conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
     T = max(T, 273.16)
     if dT * dT < 1e-9 * 1e-9:
       break
-  return pmix
+  return TriplerhopT(rhow, pmix, T)
 
-''' Legacy functions '''
+''' Legacy/test functions '''
 
 def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0) -> DTYPE_t:
