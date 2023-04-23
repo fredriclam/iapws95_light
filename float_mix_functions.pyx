@@ -138,6 +138,31 @@ cpdef Pair pure_phase_newton_pair(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cpdef Pair pure_phase_newton_pair_from_phir_d(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
+  DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0,
+  DTYPE_t phir_d, DTYPE_t phir_dd):
+  ''' Returns Pair<value, slope> for Newton iteration of the pure phase volume-
+  pressure equilibrium condition. Reuses phir_d, phir_dd values. '''
+  # Compute coefficients
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t a = rhoc / rho_mix
+  cdef DTYPE_t b = -yw
+  # Define polynomial coefficients
+  cdef DTYPE_t c2 = a
+  cdef DTYPE_t c1 = (1.0 / rho_mix * (K - p_m0) - K * (1.0 - yw) / rho_m0) \
+    / (R * T) - yw
+  cdef DTYPE_t c0 = -yw / (rhoc * R * T) * (K - p_m0)
+  ''' Return value of scaled pressure difference and slope '''
+  cdef DTYPE_t val = (a*d + b)*d*d*phir_d + ((c2 * d) + c1)*d + c0
+  cdef DTYPE_t slope = (3*a*d + 2*b)*d*phir_d \
+    + (a*d + b)*d*d*phir_dd \
+    + 2*c2*d + c1
+  return Pair(val, slope)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cpdef DTYPE_t linear_energy_model(DTYPE_t T, DTYPE_t yw, DTYPE_t ym,
   DTYPE_t c_v_m0):
   ''' Linear pressure-independent energy model '''
@@ -165,7 +190,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
   cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
   cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
-  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w
+  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
   cdef DTYPE_t _c1, Z, Z_d, d1psi, d2psi, drhowdT, rhom, drhomdT
   # Root-finding parameters
   cdef unsigned int i = 0
@@ -173,7 +198,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   cdef DTYPE_t trust_region_size = 1e8
   # TODO: Check validity of inputs (lower and upper bounds)
 
-  # Set initial temperature
+  ''' Estimate initial temperature T_init '''
   if rho_mix < 10.0:
     # Due to an issue with flip-flopping for a low-density gas:
     T = ((vol_energy / rho_mix) - yw * (e_gas_ref - c_v_gas_ref * T_gas_ref)) \
@@ -185,13 +210,16 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
     # if yw >= 0.2:
     #   # Refine estimate using a posteriori approximation of residual
     #   T += poly_T_residual_est(yw, vol_energy, rho_mix)
+  ''' Estimate d(T_c) '''
   # One-step Newton approximation of critical-temperature value
   d = 1.0
   out_pair = pure_phase_newton_pair(d, Tc, rho_mix, yw, K, p_m0, rho_m0)
   d -= out_pair.first/out_pair.second
+  ''' Estimate supercriticality based on energy at Tc '''
   # Quantify approximately supercriticality
   is_supercritical = yw * u(d*rhoc, Tc) \
     + ym * (c_v_m0 * Tc) < vol_energy/rho_mix
+  ''' Clip T_init based on supercriticality estimate '''
   # Clip initial temperature guess to above or below supercritical
   if is_supercritical and T < Tc + 1.0:
     T = Tc + 1.0
@@ -240,7 +268,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
     # case_str = "iter-supercrit"
     
     if T < Tc:
-      # Check saturation curves TODO: use fused op
+      # Check saturation curves
       sat_triple = prho_sat(T)
       psat, rho_satl, rho_satv = \
         sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
@@ -314,7 +342,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
         dedT = yw * dewdT + ym * c_v_m0
 
         ''' Compute Newton step for temperature '''
-        curr_energy = yw * u(rhow, T) \
+        curr_energy = yw * (x * uv + (1.0 - x) * ul) \
           + ym * (c_v_m0 * T + magma_mech_energy(psat, K, p_m0, rho_m0))
         dT = -(curr_energy - vol_energy/rho_mix)/dedT
         if rho_mix < 10: # Size limiter for sparse gas
@@ -337,10 +365,13 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Compute phasic states using current T and previous iteration d
       rhow = d*rhoc
       rhom = ym / (1.0 / rho_mix - yw / rhow)
-      ''' Call cost-critical functions '''
+      # Evaluate phir derivatives (cost-critical)
       _phirall = fused_phir_all(d, Tc/T)
-      # Compute heat capacity TODO: we have the info needed.
-      _c_v_w = c_v(rhow, T)
+      # Compute pure-phase heat capacity
+      _c_v_w = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
+      # Compute pure-phase energy
+      _u = t * R * T * (_phirall.phir_t + phi0_t(d, t))
+
       ''' Compute slopes '''
       # Compute intermediates
       _c1 = (v_mix * d - yw / rhoc)
@@ -363,7 +394,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Compute mixture energy-temperature slope
       dedT = yw * dewdT + ym * demdT
       ''' Compute Newton step for temperature '''
-      curr_energy = yw * u(rhow, T) \
+      curr_energy = yw * _u \
         + ym * (c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0))
       # Temperature migration
       dT = -(curr_energy - vol_energy/rho_mix)/dedT
@@ -468,7 +499,6 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
     case_str = "iter-supercrit"
     
     if T < Tc:
-      # Check saturation curves TODO: use fused op
       sat_info = prho_sat(T)
       psat, rho_satl, rho_satv = sat_info.psat, sat_info.rho_satl, sat_info.rho_satv
       # Compute volume-sum constrained density value if pm = psat
@@ -584,7 +614,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       rhom = ym / (1.0 / rho_mix - yw / rhow)
       ''' Call cost-critical functions '''
       _phir_all = fused_phir_all(d, Tc/T)
-      # Compute heat capacity TODO: we have the info needed.
+      # Compute heat capacity
       _c_v_w = c_v(rhow, T)
 
       ''' Compute slopes '''
