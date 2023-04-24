@@ -4294,8 +4294,31 @@ cpdef DTYPE_t c_v(DTYPE_t rho, DTYPE_t T):
   # Pure phase pressure computation
   return -t * t * R * (fused_phir_all(d, t).phir_tt + phi0_tt(d, t))
 
-def rho_pT(p, T):
-  pass
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t rhol_pT(DTYPE_t p, DTYPE_t T):
+  ''' Return liquid density at given p, T. Return value is -1.0 if p, T is not
+  a valid equilibrium liquid state. '''
+  cdef SatTriple _prho_sat = prho_sat(T)
+  if p < _prho_sat.psat:
+    # No valid liquid state at equilibrium
+    return -1.0
+  cdef DTYPE_t d = _prho_sat.rho_satl / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t step
+  cdef Pair out_pair
+  cdef unsigned int i
+  # Use Newton iteration in liquid regime
+  for i in range(6):
+    out_pair = fused_phir_d_phir_dd(d, t)
+    step = (d * d * (1.0 + out_pair.first) - p / (rhoc * R * T)) \
+      / (d * (2.0*(1.0 + out_pair.first) + d*out_pair.second))
+    d -= step
+    if step*step < 1e-12*1e-12:
+      break
+  return d
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
