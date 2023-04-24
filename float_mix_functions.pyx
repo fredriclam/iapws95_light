@@ -396,7 +396,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * (rhoc * R * T * (Z + d * Z_d))
       d2psi = _c1 * Z * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
-      drhowdT = -d2psi / d1psi * rhoc # Units TODO:
+      drhowdT = -d2psi / d1psi * rhoc
       # Compute density-temperature slope for m state
       drhomdT = -yw / ym * (rhom / rhow) * (rhom / rhow) * drhowdT
       # Compute water energy-temperature slope
@@ -669,10 +669,14 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * Z * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
       drhowdT = -d2psi / d1psi * rhoc
-      # Compute density-temperature slope for m state TODO: chain rule may be
-      #   missing a term.
+      # Compute density-temperature slope for m state
       drhomdT = -(rhom*rhom/ ym) * (yw * (drhowdT / (rhow*rhow)) 
-        - ya * (R_a / pmix))
+        + ya * (R_a * T / (pmix*pmix)) * (
+          - pmix / T  +
+          rhoc * R * ((1.0 + d * _phirall.phir_d) * d 
+            - d * d * _phirall.phir_dt * Tc / T)
+          + (1.0 + 2.0 * d * _phirall.phir_d + d * d * _phirall.phir_dd)
+            * rhoc * R * T * drhowdT / rhoc))
       # Compute water energy-temperature slope
       dewdT = _c_v_w - R * Tc / rhoc * _phirall.phir_dt * drhowdT
       # Compute magma energy-temperature slope (c_v dT + de/dv * dv, v = v(T))
@@ -928,7 +932,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * (rhoc * R * T * (Z + d * Z_d))
       d2psi = _c1 * Z * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
-      drhowdT = -d2psi / d1psi * rhoc # Units TODO:
+      drhowdT = -d2psi / d1psi * rhoc
       # Compute density-temperature slope for m state
       drhomdT = -yw / ym * (rhom / rhow) * (rhom / rhow) * drhowdT
       # Compute pressure-temperature slope under the volume addition constraint
