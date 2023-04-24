@@ -139,7 +139,7 @@ cpdef Pair pure_phase_newton_pair(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
 @cython.cdivision(True)
 cpdef Pair pure_phase_newton_pair_WLMA(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t ya, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0,
-  DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a):
+  DTYPE_t R_a, DTYPE_t gamma_a):
   ''' Returns Pair<value, slope> for Newton iteration of the pure phase volume-
   pressure equilibrium condition. '''
   cdef Pair out = fused_phir_d_phir_dd(d, Tc / T)
@@ -148,14 +148,22 @@ cpdef Pair pure_phase_newton_pair_WLMA(DTYPE_t d, DTYPE_t T, DTYPE_t rho_mix,
   cdef DTYPE_t ym = 1.0 - yw - ya
   cdef DTYPE_t Z = 1.0 + d * phir_d
   cdef DTYPE_t Z_d = phir_d + d * phir_dd
-  cdef DTYPE_t val = rhoc / rho_mix * d * d * Z * Z \
+  cdef DTYPE_t val = rhoc / rho_mix * d * d * Z \
+    - (yw * Z + ya * R_a / R) * d \
+    + (-(-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) * d \
+    - (K - p_m0) / (rhoc * R * T) * (yw + ya * R_a / R / Z)
+  cdef DTYPE_t slope = rhoc / rho_mix * (2.0 * d * Z + d * d * Z_d) \
+    - (yw * Z + ya * R_a / R) - yw * d * Z_d \
+    + (-(-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) \
+    - (K - p_m0) / (rhoc * R * T) * (-ya * R_a / R / (Z * Z) * Z_d)
+  '''cdef DTYPE_t val = rhoc / rho_mix * d * d * Z * Z \
     - (yw * Z + ya * R_a / R) * d * Z \
-    + ((-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) * d * Z \
-    + (K - p_m0) / (rhoc * R * T) * (yw * Z + ya * R_a / R)
-  cdef DTYPE_t slope = -rhoc / rho_mix * 2.0 * d * Z * (Z + d * Z_d) \
-    - (yw * Z + ya * R_a / R) * (Z + d * Z_d) - yw * d * Z \
-    + ((-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) * (Z + d * Z_d) \
-    + (K - p_m0) / (rhoc * R * T) * (yw * Z_d)
+    + (-(-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) * d * Z \
+    - (K - p_m0) / (rhoc * R * T) * (yw * Z + ya * R_a / R)
+  cdef DTYPE_t slope = rhoc / rho_mix * 2.0 * d * Z * (Z + d * Z_d) \
+    - (yw * Z + ya * R_a / R) * (Z + d * Z_d) - yw * d * Z * Z_d \
+    + (-(-K + p_m0) / rho_mix - K / rho_m0 * ym) / (R * T) * (Z + d * Z_d) \
+    - (K - p_m0) / (rhoc * R * T) * (yw * Z_d)'''
   return Pair(val, slope)
 
 @cython.boundscheck(False)
@@ -469,7 +477,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   # One-step Newton approximation of critical-temperature value
   d = 1.0
   out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
-    rho_m0, c_v_m0, R_a, gamma_a)
+    rho_m0, R_a, gamma_a)
   d -= out_pair.first/out_pair.second
   ''' Estimate supercriticality based on energy at Tc '''
   # Quantify approximately supercriticality (rho is approximate, and magma
@@ -504,7 +512,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       d = rho_satv/rhoc if rhow < rho_satv else rho_satl/rhoc
       # Refine estimate of d from one Newton iteration
       out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
-        rho_m0, c_v_m0, R_a, gamma_a)
+        rho_m0, R_a, gamma_a)
       d -= out_pair.first/out_pair.second
       # Compute pressure
       pmix = p(d*rhoc, T)
@@ -512,7 +520,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
     # start_case = "start-supercrit"
     # Refine estimate of d from one Newton iteration
     out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
-      rho_m0, c_v_m0, R_a, gamma_a)
+      rho_m0, R_a, gamma_a)
     d -= out_pair.first/out_pair.second
     # Compute pressure
     pmix = p(d*rhoc, T)
@@ -594,7 +602,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
           + ya / yw * R_a * T / (psat*psat)
         # Compute change in allowable volume due to air presence (temp variable)
         #   This is a partial derivative of the volume sum condition
-        dvdT = - ya / yw * (R_a * T) / (psat * psat)
+        dvdT = - ya / yw * (R_a / psat)
         # Compute saturation-pressure-temperature slope
         dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
           * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
@@ -687,7 +695,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Newton-step d (cross term in Jacobian)
       d += drhowdT/rhoc
       out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
-        rho_m0, c_v_m0, R_a, gamma_a)
+        rho_m0, R_a, gamma_a)
       d -= out_pair.first/out_pair.second
       # Update pressure
       pmix = p(d*rhoc, T)
