@@ -370,6 +370,9 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       else:
         # Annotate subcritical but pure-phase case
         # case_str = "iter-subcrit"
+        # Update d based on computed rhow value
+        # if rhow > 0:
+        #   d = rhow / rhoc
         pass
     if not is_mixed:
       # Compute phasic states using current T and previous iteration d
@@ -400,7 +403,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Compute density-temperature slope for m state
       drhomdT = -yw / ym * (rhom / rhow) * (rhom / rhow) * drhowdT
       # Compute water energy-temperature slope
-      dewdT = _c_v_w - R * Tc / rhoc * _phirall.phir_dt * drhowdT
+      dewdT = _c_v_w + R * Tc / rhoc * _phirall.phir_dt * drhowdT
       # Compute magma energy-temperature slope
       demdT = c_v_m0 \
         + pmix / (rhom*rhom) * drhomdT
@@ -416,7 +419,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
-      d += drhowdT/rhoc
+      d += drhowdT/rhoc * dT
       out_pair = pure_phase_newton_pair(d, T, rho_mix, yw, K, p_m0, rho_m0)
       d -= out_pair.first/out_pair.second
       # Update pressure
@@ -454,6 +457,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
   cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
   cdef DTYPE_t _c1, Z, Z_d, Z_T, d1psi, d2psi, drhowdT, rhom, drhomdT, drhomadT
+  cdef DTYPE_t d_inner_step
   cdef DTYPE_t c_v_a = R_a / (gamma_a - 1.0)
   # Root-finding parameters
   cdef unsigned int i = 0
@@ -509,7 +513,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
     else:
       # start_case = "start-subcrit"
       # Select pure vapor or pure liquid phase density
-      d = rho_satv/rhoc if rhow < rho_satv else rho_satl/rhoc
+      d = rho_satv/rhoc if (0 < rhow and rhow < rho_satv) else rho_satl/rhoc
       # Refine estimate of d from one Newton iteration
       out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
         rho_m0, R_a, gamma_a)
@@ -527,6 +531,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   # Clip temperatures below the triple point temperature
   if T < 273.16:
     T = 273.16
+    
     
   ''' Perform iteration for total energy condition '''
   for i in range(MAX_NEWTON_ITERS):
@@ -615,7 +620,8 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
         dewdT = (uv - ul) * dxdT + x*du1dT + (1.0-x)*du0dT
         # Construct de/dT for mixture, with -pdv of magma as (p * -dvdp * dpdT)
         dedT = yw * dewdT + ym * c_v_m0 + ya * c_v_a \
-          + psat * K / rho_m0 / ((psat + K - p_m0)*(psat + K - p_m0)) * dpsatdT
+          + ym * (psat * K / rho_m0 / ((psat + K - p_m0)*(psat + K - p_m0))
+            * dpsatdT)
 
         ''' Compute Newton step for temperature '''
         curr_energy = yw * (x * uv + (1.0 - x) * ul) \
@@ -637,6 +643,8 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       else:
         # Annotate subcritical but pure-phase case
         # case_str = "iter-subcrit"
+        # Update d based on computed rhow value
+        # d = rhow / rhoc
         pass
     if not is_mixed:
       # Compute phasic states using current d, T
@@ -666,10 +674,10 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * (rhoc * R * T * (Z + d * Z_d))
       d2psi = (ya * R_a / R / rhoc * Z_T / (Z * Z)) \
         * (Z * d * rhoc * R * T + K - p_m0) \
-        + _c1 * Z * d * rhoc * R
+        + _c1 * (Z + T * Z_T) * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
       drhowdT = -d2psi / d1psi * rhoc
-      # Compute density-temperature slope for m state
+      # Compute density-temperature slope for m state TODO: checked
       drhomdT = -(rhom*rhom/ ym) * (yw * (drhowdT / (rhow*rhow)) 
         + ya * (R_a * T / (pmix*pmix)) * (
           - pmix / T  +
@@ -677,15 +685,13 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
             - d * d * _phirall.phir_dt * Tc / T)
           + (1.0 + 2.0 * d * _phirall.phir_d + d * d * _phirall.phir_dd)
             * rhoc * R * T * drhowdT / rhoc))
-      # Compute water energy-temperature slope
-      dewdT = _c_v_w - R * Tc / rhoc * _phirall.phir_dt * drhowdT
+      # Compute water energy-temperature slope # TODO: checked
+      dewdT = _c_v_w + R * Tc / rhoc * _phirall.phir_dt * drhowdT
       # Compute magma energy-temperature slope (c_v dT + de/dv * dv, v = v(T))
       demdT = c_v_m0 \
         + pmix / (rhom*rhom) * drhomdT # - p dv = p (drho) / rho^2
-      # Compute air energy-temperature slope
-      deadT = c_v_a
       # Compute mixture energy-temperature slope
-      dedT = yw * dewdT + ym * demdT + ya * deadT
+      dedT = yw * dewdT + ym * demdT + ya * c_v_a
       ''' Compute Newton step for temperature '''
       curr_energy = yw * _u \
         + ym * (c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0)) \
@@ -697,10 +703,17 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
-      d += drhowdT/rhoc
+      d += drhowdT/rhoc * dT
       out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
         rho_m0, R_a, gamma_a)
-      d -= out_pair.first/out_pair.second
+      d_inner_step = -out_pair.first/out_pair.second
+      d += d_inner_step
+      if fabs(d_inner_step) > 0.01*d:
+        # Restep
+        out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+          rho_m0, R_a, gamma_a)
+        d_inner_step = -out_pair.first/out_pair.second
+        d += d_inner_step
       # Update pressure
       pmix = p(d*rhoc, T)
       # Update water phasic density
@@ -712,6 +725,328 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   return TriplerhopT(rhow, pmix, T)
 
 ''' Legacy/test functions '''
+
+def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
+  DTYPE_t yw, DTYPE_t ya, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0,
+  DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a):
+  ''' Mirror of conservative_to_pT_WLMA with debug info '''
+  cdef DTYPE_t ym = 1.0 - yw - ya
+  cdef DTYPE_t v_mix = 1.0/rho_mix
+  cdef DTYPE_t d = 1.0
+  cdef DTYPE_t pmix, T, t, rhow, x, dT
+  cdef DTYPE_t psat, rho_satl, rho_satv, d0, d1
+  cdef Pair out_pair
+  cdef bint is_supercritical, is_mixed
+  cdef SatTriple sat_triple
+  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
+  cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
+  cdef Derivatives_phir_0_1_2 _phirall
+  cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
+  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
+  cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
+  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
+  cdef DTYPE_t _c1, Z, Z_d, Z_T, d1psi, d2psi, drhowdT, rhom, drhomdT, drhomadT
+  cdef DTYPE_t c_v_a = R_a / (gamma_a - 1.0)
+  cdef DTYPE_t min_vw = 1e-5
+  # Root-finding parameters
+  cdef unsigned int i = 0
+  cdef unsigned int MAX_NEWTON_ITERS = 64
+  cdef DTYPE_t trust_region_size = 1e80
+  # Iteration path
+  iteration_path = []
+
+  ''' Estimate initial temperature T_init '''
+  if rho_mix < 10.0:
+    # Due to an issue with flip-flopping for a low-density gas:
+    T = ((vol_energy / rho_mix) - yw * (e_gas_ref - c_v_gas_ref * T_gas_ref)) \
+    / (yw * c_v_gas_ref + ym * c_v_m0 + ya * c_v_a)
+  else:
+    # Estimate temperature
+    T = ((vol_energy / rho_mix) - yw * (e_w0 - c_v_w0 * T_w0)) \
+      / (yw * c_v_w0 + ym * c_v_m0 + ya * c_v_a)
+    # if yw >= 0.2:
+    #   # Refine estimate using a posteriori approximation of residual
+    #   T += poly_T_residual_est(yw, vol_energy, rho_mix)
+  ''' Estimate d(T_c) '''
+  # One-step Newton approximation of critical-temperature value
+  d = 1.0
+  out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
+    rho_m0, R_a, gamma_a)
+  d -= out_pair.first/out_pair.second
+  ''' Estimate supercriticality based on energy at Tc '''
+  # Quantify approximately supercriticality (rho is approximate, and magma
+  #   mechanical energy is neglected)
+  is_supercritical = yw * u(d*rhoc, Tc) \
+    + ym * (c_v_m0 * Tc) + ya * (c_v_a * Tc) < vol_energy/rho_mix
+  ''' Clip T_init based on supercriticality estimate '''
+  # Clip initial temperature guess to above or below supercritical
+  if is_supercritical and T < Tc + 1.0:
+    T = Tc + 1.0
+  elif not is_supercritical and T > Tc - 1.0:
+    T = Tc - 1.0
+  
+  iteration_path.append((None, d*rhoc, T, "init"))
+
+  ''' Cold-start compute pressure, water phasic density '''
+  if not is_supercritical:
+    # Compute saturation properties
+    sat_triple = prho_sat(T)
+    psat, rho_satl, rho_satv = \
+      sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+    # Compute tentative density value
+    rhow = yw / (v_mix - ym * K / rho_m0 / (psat + K - p_m0) \
+           - ya * R_a * T / psat)
+    # Check rhow > 0 positivity constraint
+    if rhow <= 0:
+      # Pressurize above saturated liquid
+      rhow = rho_satl*(1+1e-6)
+      '''# Soft-bound Newton to bring volume close to zero
+      iteration_path.append((psat, rhow, T, 'negative-rhow'))
+      for i in range(1):
+        t = Tc/T
+        _phirall_0 = fused_phir_all(rho_satl/rhoc, t)
+        _phirall_1 = fused_phir_all(rho_satv/rhoc, t)
+        _phi0all_0 = fused_phi0_all(rho_satl/rhoc, t)
+        _phi0all_1 = fused_phi0_all(rho_satv/rhoc, t)
+        dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+          * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+            - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+        # Approximate dT using Newton and neglecting dvm/dp * dp/dT 
+        min_vw = 1e-5
+        dT = -(T - psat / (ya * R_a) 
+          * (v_mix - ym * K / rho_m0 / (psat + K - p_m0) - min_vw)) \
+          / (1 - dpsatdT / (ya * R_a) * \
+          (v_mix - ym * K / rho_m0 / (psat + K - p_m0) - min_vw))
+        T += dT
+        # Recompute saturation curve
+        sat_triple = prho_sat(T)
+        psat, rho_satl, rho_satv = \
+          sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+        iteration_path.append((psat, rhow, T, 'negative-rhow-corr'))
+    if rhow <= 0:
+      rhow = 0.1
+      iteration_path.append((psat, rhow, T, 'negative-rhow-force'))'''
+
+    if rho_satv <= rhow and rhow <= rho_satl:
+      start_case = "start-LV"
+      # Accept tentative mixed-phase value of density
+      d = rhow / rhoc
+      # Compute pressure from sat vapor side
+      pmix = psat
+    else:
+      start_case = "start-subcrit"
+      # Select pure vapor or pure liquid phase density
+      d = rho_satv/rhoc if (0 < rhow and rhow < rho_satv) else rho_satl/rhoc
+      # Refine estimate of d from one Newton iteration
+      out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+        rho_m0, R_a, gamma_a)
+      d -= out_pair.first/out_pair.second
+      # Compute pressure
+      pmix = p(d*rhoc, T)
+  else:
+    start_case = "start-supercrit"
+    # Refine estimate of d from one Newton iteration
+    out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+      rho_m0, R_a, gamma_a)
+    d -= out_pair.first/out_pair.second
+    # Compute pressure
+    pmix = p(d*rhoc, T)
+  # Clip temperatures below the triple point temperature
+  if T < 273.16:
+    T = 273.16
+  # Clip densities (air can be problematic)
+  if rhow <= 1e-6:
+    rhow = 1e-6
+  
+  iteration_path.append((pmix, d*rhoc, T, start_case))
+    
+  ''' Perform iteration for total energy condition '''
+  for i in range(MAX_NEWTON_ITERS):
+    t = Tc/T
+    is_mixed = False
+    # Set default case string
+    case_str = "iter-supercrit"
+    
+    if T < Tc:
+      # Check saturation curves
+      sat_triple = prho_sat(T)
+      psat, rho_satl, rho_satv = \
+        sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+      # Compute volume-sum constrained density value if pm = psat
+      rhow = yw / (v_mix - ym * K / rho_m0 / (psat + K - p_m0) \
+           - ya * R_a * T / psat)
+      if rho_satv <= rhow and rhow <= rho_satl:
+        case_str = "iter-LV"
+        is_mixed = True
+        # Accept tentative mixed-phase value of pressure, density
+        pmix = psat
+        d = rhow / rhoc
+        # Compute steam fraction (fraction vapor mass per total water mass)
+        x = (1.0 / rhow - 1.0 / rho_satl) / (1.0 / rho_satv - 1.0 / rho_satl)
+        # Compute temperature update using saturation relation
+        d0 = rho_satl/rhoc
+        d1 = rho_satv/rhoc
+        _phirall_0 = fused_phir_all(d0, Tc/T)
+        _phirall_1 = fused_phir_all(d1, Tc/T)
+        _phi0all_0 = fused_phi0_all(d0, Tc/T)
+        _phi0all_1 = fused_phi0_all(d1, Tc/T)
+        ''' Derivatives along Maxwell-constr. level set G(t, d0, d1) = 0 '''
+        # Vector components of partial dG/dt = (dG0/dt; dG1/dt)
+        dG0dt = d1*_phirall_1.phir_dt + _phirall_1.phir_t + _phi0all_1.phi0_t \
+          - d0*_phirall_0.phir_dt - _phirall_0.phir_t - _phi0all_0.phi0_t
+        dG1dt = d0*d0*_phirall_0.phir_dt - d1*d1*_phirall_1.phir_dt
+        # Vector components of partial dG/d0
+        dG0dd0 = -2.0*_phirall_0.phir_d \
+          - d0*_phirall_0.phir_dd - _phi0all_0.phi0_d
+        dG1dd0 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0*d0*_phirall_0.phir_dd
+        # Vector components of partial dG/d1
+        dG0dd1 = 2.0*_phirall_1.phir_d \
+          + d1*_phirall_1.phir_dd + _phi0all_1.phi0_d
+        dG1dd1 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1*d1*_phirall_1.phir_dd
+        # Compute d(d0)/dt and d(d1)/dt constrainted to level set of G
+        _det = dG0dd0 * dG1dd1 - dG0dd1 * dG1dd0
+        dd0dt = -(dG1dd1 * dG0dt - dG0dd1 * dG1dt) / _det
+        dd1dt = -(-dG1dd0 * dG0dt + dG0dd0 * dG1dt) / _det
+        # Construct derivatives of volume:
+        #   dv0/dt = partial(v0, t) + partial(v0, d) * dd0/dt
+        #   dv0/dT = dv0/dt * dt/dT
+        dv0dT = -1.0/(rhoc * d0 * d0) * dd0dt * (-Tc/(T*T))
+        dv1dT = -1.0/(rhoc * d1 * d1) * dd1dt * (-Tc/(T*T))
+        # Construct derivatives of internal energy
+        du0dT = R * Tc * (
+          (_phirall_0.phir_dt + _phi0all_0.phi0_dt) * dd0dt
+          + (_phirall_0.phir_tt + _phi0all_0.phi0_tt)
+        ) * (-Tc/(T*T))
+        du1dT = R * Tc * (
+          (_phirall_1.phir_dt + _phi0all_1.phi0_dt) * dd1dt
+          + (_phirall_1.phir_tt + _phi0all_1.phi0_tt)
+        ) * (-Tc/(T*T))
+        # Construct dx/dT (change in steam fraction subject to mixture
+        #   conditions) as partial(x, T) + partial(x, v) * dv/dT
+        v  = 1.0/(d*rhoc)
+        vl = 1.0/(d0*rhoc)
+        vv = 1.0/(d1*rhoc)
+        partial_dxdT = ((v - vv) * dv0dT - (v - vl) * dv1dT) \
+          / ((vv - vl) * (vv - vl))
+        partial_dxdv =  1.0 / (vv - vl) # add partial (x, v)
+        # Partial of volume w.r.t. pressure due to volume sum condition
+        dvdp = ym / yw * K / rho_m0 / ((psat + K - p_m0)*(psat + K - p_m0)) \
+          + ya / yw * R_a * T / (psat*psat)
+        # Compute change in allowable volume due to air presence (temp variable)
+        #   This is a partial derivative of the volume sum condition
+        dvdT = - ya / yw * (R_a / psat)
+        # Compute saturation-pressure-temperature slope
+        dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+          * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+            - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+        dxdT = partial_dxdT + partial_dxdv * (dvdp * dpsatdT + dvdT)
+        # Construct de/dT for water:
+        #   de/dT = partial(e,x) * dx/dT + de/dT
+        uv = R * Tc * (_phirall_1.phir_t + _phi0all_1.phi0_t)
+        ul = R * Tc * (_phirall_0.phir_t + _phi0all_0.phi0_t)
+        dewdT = (uv - ul) * dxdT + x*du1dT + (1.0-x)*du0dT
+        # Construct de/dT for mixture, with -pdv of magma as (p * -dvdp * dpdT)
+        dedT = yw * dewdT + ym * c_v_m0 + ya * c_v_a \
+          + ym * (psat * K / rho_m0 / ((psat + K - p_m0)*(psat + K - p_m0)) * dpsatdT)
+
+        ''' Compute Newton step for temperature '''
+        curr_energy = yw * (x * uv + (1.0 - x) * ul) \
+          + ym * (c_v_m0 * T + magma_mech_energy(psat, K, p_m0, rho_m0)) \
+          + ya * (c_v_a * T)
+        dT = -(curr_energy - vol_energy/rho_mix)/dedT
+        if rho_mix < 10: # Size limiter for sparse gas
+          trust_region_size = 1e2
+          dT = -(curr_energy - vol_energy/rho_mix)/(dedT + 1e6/1e2)
+
+        ''' Estimate saturation state in destination temperature '''
+        # Vapor-boundary overshooting correction
+        dvdT = (vv - vl) * dxdT + x*dv1dT + (1.0-x)*dv0dT
+        dT_to_v_bdry = (vv - v) / (dvdT - dv1dT)
+        if dT > 0 and dT_to_v_bdry > 0 and dT > dT_to_v_bdry:
+          dT = 0.5 * (dT + dT_to_v_bdry)
+        # Newton-step temperature
+        T += dT
+      else:
+        # Annotate subcritical but pure-phase case
+        case_str = "iter-subcrit"
+        pass
+        '''if d < 0:
+          case_str = "iter-subcrit-forced-positivity"
+          d = rho_satl*(1+1e-6) / rhoc
+        else:
+          # Update d based on computed rhow value
+          d = rhow / rhoc'''
+    if not is_mixed:
+      # Compute phasic states using current d, T
+      rhow = d*rhoc
+      rhom = ym / (1.0 / rho_mix - yw / rhow - ya * (R_a * T) / pmix)
+      # Evaluate phir derivatives (cost-critical)
+      _phirall = fused_phir_all(d, Tc/T)
+      # Compute pure-phase heat capacity
+      _c_v_w = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
+      # Compute pure-phase energy
+      _u = t * R * T * (_phirall.phir_t + phi0_t(d, t))
+
+      ''' Compute slopes '''
+      # Compute compressibility, partial of compressibility
+      Z = 1.0 + d * _phirall.phir_d
+      Z_d = _phirall.phir_d + d * _phirall.phir_dd
+      Z_T = d * _phirall.phir_dt * (-Tc / (T*T))
+      # Compute intermediates
+      _c1 = (v_mix * d - (yw + ya*R_a/(Z *R)) / rhoc)
+      # Compute derivatives of pressure equilibrium level set function 
+      #  R * T *psi(d, T) = 0 constrains d(t).
+      #  Note the difference with the Newton slope-pair function.
+      #  Here we use the form of equation with T appearing only once
+      #  d1psi is d/dd (nondim) and d2psi is d/dT (dim) of (R * T * psi(d,T)).
+      d1psi = (v_mix + ya * R_a / R / rhoc * Z_d / (Z * Z)) \
+        * (Z * d * rhoc * R * T + K - p_m0) - K * ym / rho_m0 \
+        + _c1 * (rhoc * R * T * (Z + d * Z_d))
+      d2psi = (ya * R_a / R / rhoc * Z_T / (Z * Z)) \
+        * (Z * d * rhoc * R * T + K - p_m0) \
+        + _c1 * (Z + T * Z_T) * d * rhoc * R
+      # Compute density-temperature slope under the volume addition constraint
+      drhowdT = -d2psi / d1psi * rhoc
+      # Compute density-temperature slope for m state TODO: most likely
+      drhomdT = -(rhom*rhom/ ym) * (yw * (drhowdT / (rhow*rhow)) 
+        + ya * (R_a * T / (pmix*pmix)) * (
+          - pmix / T  +
+          rhoc * R * ((1.0 + d * _phirall.phir_d) * d 
+            - d * d * _phirall.phir_dt * Tc / T)
+          + (1.0 + 2.0 * d * _phirall.phir_d + d * d * _phirall.phir_dd)
+            * rhoc * R * T * drhowdT / rhoc))
+      # Compute water energy-temperature slope
+      dewdT = _c_v_w + R * Tc / rhoc * _phirall.phir_dt * drhowdT
+      # Compute magma energy-temperature slope (c_v dT + de/dv * dv, v = v(T))
+      demdT = c_v_m0 \
+        + pmix / (rhom*rhom) * drhomdT # - p dv = p (drho) / rho^2
+      # Compute mixture energy-temperature slope
+      dedT = yw * dewdT + ym * demdT + ya * c_v_a
+      ''' Compute Newton step for temperature '''
+      curr_energy = yw * _u \
+        + ym * (c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0)) \
+        + ya * c_v_a * T
+      # Temperature migration
+      dT = -(curr_energy - vol_energy/rho_mix)/dedT
+      # Limit to dT <= 100
+      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
+      # Newton-step temperature
+      T += dT
+      # Newton-step d (cross term in Jacobian)
+      d += drhowdT/rhoc * dT
+      out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+        rho_m0, R_a, gamma_a)
+      d -= out_pair.first/out_pair.second
+      # Update pressure
+      pmix = p(d*rhoc, T)
+      # Update water phasic density
+      rhow = d * rhoc
+    # Clip temperatures below the triple point temperature
+    T = max(T, 273.16)
+    iteration_path.append((pmix, rhow, T, case_str))
+    if dT * dT < 1e-9 * 1e-9:
+      break
+  return iteration_path, TriplerhopT(rhow, pmix, T)
 
 def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0,
@@ -908,6 +1243,9 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       else:
         # Annotate subcritical but pure-phase case
         case_str = "iter-subcrit"
+        # Update d based on computed rhow value
+        # d = rhow / rhoc
+        pass
     
     if not is_mixed:
       # Compute phasic states using current T and previous iteration d
@@ -930,7 +1268,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       #  d1psi is d/dd and d2psi is d/dT of (R * T * psi(d,T)).
       d1psi = v_mix * (Z * d * rhoc * R * T + K - p_m0) - K * ym / rho_m0 \
         + _c1 * (rhoc * R * T * (Z + d * Z_d))
-      d2psi = _c1 * Z * d * rhoc * R
+      d2psi = _c1 * Z * d * rhoc * R # TODO: update here and in non _debug from Z to (Z + T * Z_T)
       # Compute density-temperature slope under the volume addition constraint
       drhowdT = -d2psi / d1psi * rhoc
       # Compute density-temperature slope for m state
@@ -941,7 +1279,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       #     + d * d * _phir_all["phir_dd"]) * drhowdT * T
         # + d * d * (1.0 + _phir_all["phir_d"]))
       # Compute water energy-temperature slope
-      dewdT = _c_v_w - R * Tc / rhoc * _phir_all.phir_dt * drhowdT
+      dewdT = _c_v_w + R * Tc / rhoc * _phir_all.phir_dt * drhowdT
       # Compute magma energy-temperature slope
       demdT = c_v_m0 \
         + pmix / (rhom*rhom) * drhomdT
@@ -967,7 +1305,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
-      d += drhowdT/rhoc
+      d += drhowdT/rhoc * dT
       out_pair = pure_phase_newton_pair(d, T, rho_mix, yw, K, p_m0, rho_m0)
       d -= out_pair.first/out_pair.second
       # Update pressure
@@ -979,7 +1317,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
     T = max(T, 273.16)
 
     # Append output
-    iteration_path.append((pmix, d*rhoc, T, case_str))
+    iteration_path.append((pmix, rhow, T, case_str))
 
     if dT * dT < 1e-9 * 1e-9:
       break
