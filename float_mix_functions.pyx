@@ -415,7 +415,7 @@ cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Temperature migration
       dT = -(curr_energy - vol_energy/rho_mix)/dedT
       # Limit to dT <= 100
-      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
+      dT *= min(1.0, 50.0/(1e-16+fabs(dT)))
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
@@ -483,6 +483,12 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
     rho_m0, R_a, gamma_a)
   d -= out_pair.first/out_pair.second
+  if d <= 0:
+    # Recovery
+    d = 3.0
+    out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
+      rho_m0, R_a, gamma_a)
+    d -= out_pair.first/out_pair.second
   ''' Estimate supercriticality based on energy at Tc '''
   # Quantify approximately supercriticality (rho is approximate, and magma
   #   mechanical energy is neglected)
@@ -531,7 +537,21 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
   # Clip temperatures below the triple point temperature
   if T < 273.16:
     T = 273.16
-    
+  if d <= 0:
+    # Second recovery
+    d = 3.0
+  for i in range(20):
+    out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+      rho_m0, R_a, gamma_a)
+    d_inner_step = -out_pair.first/out_pair.second
+    d += d_inner_step
+    if d_inner_step * d_inner_step < 1e-4 * d * d or d < 0:
+      break
+  if d < 0:
+    d = 2.0
+  # Compute pressure
+  pmix = p(d*rhoc, T)  
+
     
   ''' Perform iteration for total energy condition '''
   for i in range(MAX_NEWTON_ITERS):
@@ -649,6 +669,17 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
     if not is_mixed:
       # Compute phasic states using current d, T
       rhow = d*rhoc
+      if d <= 0 and T < Tc:
+        # Negative density recovery attempt
+        sat_triple = prho_sat(T)
+        d = sat_triple.rho_satl / rhoc
+        rhow = sat_triple.rho_satl
+      elif d <= 0:
+        # Supercritical recovery attempt (cool mixture to reduce air volume)
+        T = Tc - 1.0
+        sat_triple = prho_sat(T)
+        d = sat_triple.rho_satl / rhoc
+        rhow = sat_triple.rho_satl
       rhom = ym / (1.0 / rho_mix - yw / rhow - ya * (R_a * T) / pmix)
       # Evaluate phir derivatives (cost-critical)
       _phirall = fused_phir_all(d, Tc/T)
@@ -677,7 +708,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * (Z + T * Z_T) * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
       drhowdT = -d2psi / d1psi * rhoc
-      # Compute density-temperature slope for m state TODO: checked
+      # Compute density-temperature slope for m state
       drhomdT = -(rhom*rhom/ ym) * (yw * (drhowdT / (rhow*rhow)) 
         + ya * (R_a * T / (pmix*pmix)) * (
           - pmix / T  +
@@ -685,7 +716,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
             - d * d * _phirall.phir_dt * Tc / T)
           + (1.0 + 2.0 * d * _phirall.phir_d + d * d * _phirall.phir_dd)
             * rhoc * R * T * drhowdT / rhoc))
-      # Compute water energy-temperature slope # TODO: checked
+      # Compute water energy-temperature slope # TODO: checked -> debug,mirror
       dewdT = _c_v_w + R * Tc / rhoc * _phirall.phir_dt * drhowdT
       # Compute magma energy-temperature slope (c_v dT + de/dv * dv, v = v(T))
       demdT = c_v_m0 \
@@ -699,7 +730,7 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Temperature migration
       dT = -(curr_energy - vol_energy/rho_mix)/dedT
       # Limit to dT <= 100
-      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
+      dT *= min(1.0, 50.0/(1e-16+fabs(dT))) # TODO: generalize using trustregion
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
@@ -708,12 +739,12 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
         rho_m0, R_a, gamma_a)
       d_inner_step = -out_pair.first/out_pair.second
       d += d_inner_step
-      if fabs(d_inner_step) > 0.01*d:
+      '''if fabs(d_inner_step) > 0.01*d:
         # Restep
         out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
           rho_m0, R_a, gamma_a)
         d_inner_step = -out_pair.first/out_pair.second
-        d += d_inner_step
+        d += d_inner_step'''
       # Update pressure
       pmix = p(d*rhoc, T)
       # Update water phasic density
@@ -773,6 +804,13 @@ def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
   out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
     rho_m0, R_a, gamma_a)
   d -= out_pair.first/out_pair.second
+  if d <= 0:
+    # Recovery
+    d = 3.0
+    out_pair = pure_phase_newton_pair_WLMA(d, Tc, rho_mix, yw, ya, K, p_m0,
+      rho_m0, R_a, gamma_a)
+    d -= out_pair.first/out_pair.second
+    iteration_path.append((None, d*rhoc, T, "init-recovery"))
   ''' Estimate supercriticality based on energy at Tc '''
   # Quantify approximately supercriticality (rho is approximate, and magma
   #   mechanical energy is neglected)
@@ -854,11 +892,24 @@ def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
   # Clip temperatures below the triple point temperature
   if T < 273.16:
     T = 273.16
-  # Clip densities (air can be problematic)
-  if rhow <= 1e-6:
-    rhow = 1e-6
   
   iteration_path.append((pmix, d*rhoc, T, start_case))
+
+  if d <= 0:
+    # Second recovery
+    d = 3.0
+  for i in range(20):
+    out_pair = pure_phase_newton_pair_WLMA(d, T, rho_mix, yw, ya, K, p_m0,
+      rho_m0, R_a, gamma_a)
+    d_inner_step = -out_pair.first/out_pair.second
+    d += d_inner_step
+    if d_inner_step * d_inner_step < 1e-4 * d * d or d < 0:
+      break
+  if d < 0:
+    d = 2.0
+  # Compute pressure
+  pmix = p(d*rhoc, T)
+  iteration_path.append((None, d*rhoc, T, "start-recovery"))
     
   ''' Perform iteration for total energy condition '''
   for i in range(MAX_NEWTON_ITERS):
@@ -979,6 +1030,17 @@ def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
     if not is_mixed:
       # Compute phasic states using current d, T
       rhow = d*rhoc
+      if d <= 0 and T < Tc:
+        # Negative density recovery attempt
+        sat_triple = prho_sat(T)
+        d = sat_triple.rho_satl / rhoc
+        rhow = sat_triple.rho_satl
+      elif d <= 0:
+        # Supercritical recovery attempt (cool mixture to reduce air volume)
+        T = Tc - 1.0
+        sat_triple = prho_sat(T)
+        d = sat_triple.rho_satl / rhoc
+        rhow = sat_triple.rho_satl
       rhom = ym / (1.0 / rho_mix - yw / rhow - ya * (R_a * T) / pmix)
       # Evaluate phir derivatives (cost-critical)
       _phirall = fused_phir_all(d, Tc/T)
@@ -1007,7 +1069,7 @@ def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
         + _c1 * (Z + T * Z_T) * d * rhoc * R
       # Compute density-temperature slope under the volume addition constraint
       drhowdT = -d2psi / d1psi * rhoc
-      # Compute density-temperature slope for m state TODO: most likely
+      # Compute density-temperature slope for m state
       drhomdT = -(rhom*rhom/ ym) * (yw * (drhowdT / (rhow*rhow)) 
         + ya * (R_a * T / (pmix*pmix)) * (
           - pmix / T  +
@@ -1029,7 +1091,7 @@ def conservative_to_pT_WLMA_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       # Temperature migration
       dT = -(curr_energy - vol_energy/rho_mix)/dedT
       # Limit to dT <= 100
-      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
+      dT *= min(1.0, 50.0/(1e-16+fabs(dT)))
       # Newton-step temperature
       T += dT
       # Newton-step d (cross term in Jacobian)
@@ -1295,7 +1357,7 @@ def conservative_to_pT_WLM_debug(DTYPE_t vol_energy, DTYPE_t rho_mix,
       trust_region_size = 1e8
       dT = -(curr_energy - vol_energy/rho_mix)/(dedT + 1e6/trust_region_size)
       # Limit to dT <= 100
-      dT *= min(1.0, 100.0/(1e-16+fabs(dT)))
+      dT *= min(1.0, 50.0/(1e-16+fabs(dT)))
 
       # Extrapolation cut
       # if case_str == "iter-subcrit":
