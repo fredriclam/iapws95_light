@@ -26,7 +26,7 @@ implementation is not dependent on the Cythin implementation.**
 
 ## Installation (pure python)
 
-This package depends on `numpy`. If necessary, install numpy using pip.
+This package depends on `numpy`. If necessary, install numpy using pip. Python >=3.9.1
 
 ## Usage (pure python)
 
