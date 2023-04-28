@@ -769,6 +769,7 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
   cdef int i = 0
   cdef int N = yw.size
   cdef TriplerhopT out_triple
+  cdef DTYPE_t p
   # Memory management
   cdef np.ndarray[DTYPE_t] data = \
     np.ascontiguousarray(np.stack((
@@ -784,17 +785,26 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
     raise ValueError("Size of vector inputs are either not the same.")
 
   for i in range(N):
-    # Use packed inputs (vol_energy, rho_mix, yw, ya)
-    out_triple = conservative_to_pT_WLMA(
-      data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
-      K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
-    # Reuse data track as output
-    data[4*i]   = out_triple.rhow
-    data[4*i+1] = out_triple.p
-    data[4*i+2] = out_triple.T
-    # TODO: replace with direct postprocess with access to last phir_*
-    # TODO: replace sound speed computation for mixture
-    data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
+    # TODO: replace binary decision
+    if data[4*i+3] > 1e-4:
+      # Treat immediately as air-only
+      _p = data[4*i] / (gamma_a - 1.0)        # en / (gamma-1)
+      data[4*i+2] = _p / (data[4*i+1] * R_a)  # p / (rho R)
+      data[4*i+1] = _p
+      data[4*i+3] = sqrt(gamma_a * R_a * data[4*i+2])
+      data[4*i] = 0.0
+    else:  
+      # Use packed inputs (vol_energy, rho_mix, yw, ya)
+      out_triple = conservative_to_pT_WLMA(
+        data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
+        K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
+      # Reuse data track as output
+      data[4*i]   = out_triple.rhow
+      data[4*i+1] = out_triple.p
+      data[4*i+2] = out_triple.T
+      # TODO: replace with direct postprocess with access to last phir_*
+      # TODO: replace sound speed computation for mixture
+      data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
   # return rhow, pmix, T
   return data # [...,:] = [rhow, pmix, T, 0.0]
 

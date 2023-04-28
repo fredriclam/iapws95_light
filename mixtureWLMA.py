@@ -14,7 +14,7 @@ except ModuleNotFoundError as e:
   raise ModuleNotFoundError("Cython module for scalar phi computations not "
     + "found. Install Cython, update python ()>=3.9) and compile locally." ) from e
 
-class WLM():
+class WLMA():
   ''' Mixture material parameters with mappings to pressure, temperature, and
   sound speed. Special case of WLMA assuming ya = 0.0. '''
 
@@ -29,8 +29,18 @@ class WLM():
     self.R = iapws95_light.R
     self.R_a = R_a
     self.gamma_a = gamma_a
+  
+  def __call__(self, rho_vec:np.array, momentum:np.array, vol_energy:np.array):
+    ''' Convenience function that calls the backend for computing
+    (p, T, vf, soundspeed). '''
 
-  def pTvf_map(self, rho_vec:np.array, momentum:np.array, vol_energy:np.array):
+    # TODO: logging
+    pass
+
+    return self.WLM_rhopT_native(rho_vec, momentum, vol_energy)
+
+  def WLM_rhopT_map(self, rho_vec:np.array,
+                    momentum:np.array, vol_energy:np.array):
     ''' Compute pressure and temperature from vector of conservative variables.
     Uses python map over a float function.
     Inputs:
@@ -79,10 +89,12 @@ class WLM():
       rhow.ravel(), T.ravel()
     ))
     # TODO: propagate error
+    pass
 
     return rhow, p, T, sound_speed, volfracW
   
-  def pTvf_native(self, arho_vec:np.array, momentum:np.array, vol_energy:np.array):
+  def WLM_rhopT_native(self, arho_vec:np.array,
+                       momentum:np.array, vol_energy:np.array):
     ''' Compute pressure and temperature from vector of conservative variables.
     Uses Cython native iteration.
     Inputs:
@@ -117,5 +129,6 @@ class WLM():
     volfracW = arho_vec[...,1:2] / rhow
 
     # TODO: propagate error
+    pass
 
     return rhow, p, T, sound_speed, volfracW
