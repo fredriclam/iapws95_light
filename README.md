@@ -92,3 +92,5 @@ Pure phase energy (supercritical)
 To compile with .html output highlighting python interactions, run
 
 ```cython -a float_phi_functions.pyx```
+
+with `cython` in the system path variable. Alternatively, include the `annotate=True` flag in `cythonize` in `setup.py`.
