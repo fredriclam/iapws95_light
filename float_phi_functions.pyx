@@ -12,6 +12,7 @@ cimport cython
 cdef extern from "math.h":
     double exp(double x)
     double log(double x)
+    double sqrt(double x)
 
 ''' Load coefficients for the ideal gas part. '''
 # Ideal gas part coefficients: updated values of the 2018 IAPWS Release
@@ -4236,7 +4237,7 @@ cpdef DTYPE_t u(DTYPE_t rho, DTYPE_t T):
         # Compute vapour mass fraction
         x = (1.0 / rho - 1.0 / sat_pair.first) \
              / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
-        # Return mass-weighted sum saturation energies
+        # Return mass-weighted sound speed'' sum saturation energies
         return t * R * T * (
           x * (fused_phir_all(dsatv, t).phir_t + phi0_t(dsatv, t)) \
           + (1.0-x) * (fused_phir_all(dsatl, t).phir_t + phi0_t(dsatl, t)))
@@ -4246,6 +4247,62 @@ cpdef DTYPE_t u(DTYPE_t rho, DTYPE_t T):
 
   # Pure phase pressure computation
   return t * R * T * (fused_phir_all(d, t).phir_t + phi0_t(d, t))
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t sound_speed(DTYPE_t rho, DTYPE_t T):
+  ''' Energy per unit mass (SI -- J / kg). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef DTYPE_t x
+  cdef Derivatives_phir_0_1_2 _phir_all0, _phir_all1
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+        # Return ``mass-weighted sound speed'' TODO: this is a proxy (incorrect)
+        _phir_all0 = fused_phir_all(dsatl,t)
+        _phir_all1 = fused_phir_all(dsatv,t)
+        _c0 = 1.0 + dsatv * _phir_all1.phir_d - dsatv * t * _phir_all1.phir_dt
+        _c1 = 1.0 + dsatl * _phir_all0.phir_d - dsatl * t * _phir_all0.phir_dt
+        return 1.0 / (x / sqrt(R * T * (1.0 + 2.0 * dsatv * _phir_all1.phir_d
+            + dsatv * dsatv * _phir_all1.phir_dd
+            - _c0 * _c0 / (t * t * (phi0_tt(dsatv, t) + _phir_all1.phir_tt)
+          ))) + (1.0 - x) / sqrt(R * T * (1.0 + 2.0 * dsatl * _phir_all0.phir_d
+            + dsatl * dsatl * _phir_all0.phir_dd
+            - _c1 * _c1 / (t * t * (phi0_tt(dsatl, t) + _phir_all0.phir_tt)
+          ))))
+  # Pure phase computation
+  _phir_all0 = fused_phir_all(d, t)
+  _c0 = 1.0 + d * _phir_all0.phir_d - d * t * _phir_all0.phir_dt
+  return sqrt(R * T * (1.0 + 2.0 * d * _phir_all0.phir_d
+    + d * d * _phir_all0.phir_dd
+    - _c0 * _c0 / (t * t * (phi0_tt(d, t) + _phir_all0.phir_tt))))
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -4283,7 +4340,7 @@ cpdef DTYPE_t c_v(DTYPE_t rho, DTYPE_t T):
         # Compute vapour mass fraction
         x = (1.0 / rho - 1.0 / sat_pair.first) \
              / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
-        # Return mass-weighted sum saturation energies
+        # Return mass-weighted sound speed'' sum saturation energies
         return -t * t * R * (
           x * (fused_phir_all(dsatv, t).phir_tt + phi0_tt(dsatv, t)) \
           + (1.0-x) * (fused_phir_all(dsatl, t).phir_tt + phi0_tt(dsatl, t)))

@@ -1,6 +1,8 @@
 #cython: language_level=3
 
 cimport cython
+import numpy as np
+cimport numpy as np
 include "float_phi_functions.pyx"
 # Inclusion replaces:
 # ctypedef double DTYPE_t
@@ -754,6 +756,47 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
     if dT * dT < 1e-9 * 1e-9:
       break
   return TriplerhopT(rhow, pmix, T)
+
+''' Vectorizing wrappers '''
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+# @cython.cdivision(True)
+def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
+  np.ndarray yw, np.ndarray ya, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0,
+  DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a) -> np.ndarray:
+  cdef int i = 0
+  cdef int N = yw.size
+  cdef TriplerhopT out_triple
+  # Memory management
+  cdef np.ndarray[DTYPE_t] data = \
+    np.ascontiguousarray(np.stack((
+      vol_energy,
+      rho_mix,
+      yw,
+      ya), axis=-1).ravel())
+  # cdef np.ndarray[DTYPE_t] rhow = np.empty_like(yw)
+  # cdef np.ndarray[DTYPE_t] pmix = np.empty_like(yw)
+  # cdef np.ndarray[DTYPE_t] T = np.empty_like(yw)
+
+  if data.size != 4*N:
+    raise ValueError("Size of vector inputs are either not the same.")
+
+  for i in range(N):
+    # Use packed inputs (vol_energy, rho_mix, yw, ya)
+    out_triple = conservative_to_pT_WLMA(
+      data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
+      K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
+    # Reuse data track as output
+    data[4*i]   = out_triple.rhow
+    data[4*i+1] = out_triple.p
+    data[4*i+2] = out_triple.T
+    # TODO: replace with direct postprocess with access to last phir_*
+    # TODO: replace sound speed computation for mixture
+    data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
+  # return rhow, pmix, T
+  return data # [...,:] = [rhow, pmix, T, 0.0]
 
 ''' Legacy/test functions '''
 
