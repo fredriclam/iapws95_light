@@ -181,6 +181,31 @@ cpdef DTYPE_t linear_energy_model(DTYPE_t T, DTYPE_t yw, DTYPE_t ym,
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cpdef DTYPE_t rho_l_pt(DTYPE_t p, DTYPE_t T):
+  ''' Compute liquid-phase density from pressure, temperature. '''
+  cdef SatTriple sat_triple = prho_sat(T)
+  # Force liquid representation
+  if p <= sat_triple.psat:
+    return sat_triple.rho_satl
+  cdef DTYPE_t d = sat_triple.rho_satl / rhoc
+  cdef DTYPE_t f, df, step
+  cdef Pair out_pair
+  # Newton's method for pressure
+  for i in range(12):
+    # Compute (phir_d, phir_dd)
+    out_pair = fused_phir_d_phir_dd(d, Tc/T)
+    f = d + d * d * out_pair.first - p / (rhoc * R * T)
+    df = 1.0 + 2.0 * d * out_pair.first + d * d * out_pair.second
+    step = -f/df
+    d += step
+    if step*step < 1e-16:
+      break
+  return d*rhoc
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cpdef TriplerhopT conservative_to_pT_WLM(DTYPE_t vol_energy, DTYPE_t rho_mix,
   DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0):
   ''' Map conservative WLM mixture variables to pressure, temperature.

@@ -4,15 +4,26 @@ implementation of underlying iterative scheme. Wraps in an object for object-
 oriented codes like Quail.
 '''
 
-import iapws95_light
+
 import numpy as np
 
 try:
-  import float_phi_functions
-  import float_mix_functions
+  # Import locally Cython compiled modules
+  from . import float_phi_functions
+  from . import float_mix_functions
 except ModuleNotFoundError as e:
   raise ModuleNotFoundError("Cython module for scalar phi computations not "
     + "found. Install Cython, update python ()>=3.9) and compile locally." ) from e
+
+''' Set up static parameters '''
+Tc = 647.096               # K
+rhoc = 322.                # kg / m^3
+R = 0.461_518_05e3         # J / kg K
+Ttriple = 273.16           # K (definition ITS-90)
+rhol_triple = 999.793      # kg/m^3
+rhov_triple = 0.004_854_58 # kg/m^3
+ptriple = 611.654_771      # Pa (2018 revised release)
+pc = 22.064e6              # Pa
 
 class WLMA():
   ''' Mixture material parameters with mappings to pressure, temperature, and
@@ -24,9 +35,9 @@ class WLMA():
     self.K, self.p_m0, self.rho_m0, self.c_v_m0 = \
       K, p_m0, rho_m0, c_v_m0
     # Extract water constants to module scope
-    self.rhoc = iapws95_light.rhoc
+    self.rhoc = rhoc
     self.vc = 1.0 / self.rhoc
-    self.R = iapws95_light.R
+    self.R = R
     self.R_a = R_a
     self.gamma_a = gamma_a
   
