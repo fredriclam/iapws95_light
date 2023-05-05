@@ -782,6 +782,246 @@ cpdef TriplerhopT conservative_to_pT_WLMA(DTYPE_t vol_energy, DTYPE_t rho_mix,
       break
   return TriplerhopT(rhow, pmix, T)
 
+''' Isolated equation sets '''
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+def kernel4_WLMA(DTYPE_t d, DTYPE_t T, DTYPE_t pr,  DTYPE_t Tr,
+  DTYPE_t vol_energy, DTYPE_t rho_mix, DTYPE_t yw, DTYPE_t ya, DTYPE_t K,
+  DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a):
+  ''' Return compatibility equations and derivatives. '''
+  cdef DTYPE_t ym = 1.0 - yw - ya
+  cdef DTYPE_t v_mix = 1.0/rho_mix
+  cdef DTYPE_t pmix, t, rhow, x, dT
+  cdef DTYPE_t psat, rho_satl, rho_satv, d0, d1, e_mix
+  cdef Pair out_pair
+  cdef bint is_supercritical, is_mixed
+  cdef SatTriple sat_triple
+  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
+  cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
+  cdef Derivatives_phir_0_1_2 _phirall
+  cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
+  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
+  cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
+  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
+  cdef DTYPE_t _c1, Z, Z_d, Z_T, d1psi, d2psi, drhowdT, rhom, drhomdT, drhomadT
+  cdef DTYPE_t d_inner_step
+  cdef DTYPE_t c_v_a = R_a / (gamma_a - 1.0)
+
+  e_mix = vol_energy/rho_mix
+  rhow = rhoc * d
+  t = Tc / T
+  
+  ''' The full relaxation system:
+  let ef_w = y_w * e_w/e_mix: energy fraction of water
+  let ef_r = y_r * e_r/e_mix: energy fraction of residual components
+
+  ef_w + ef_r - 1 == 0
+  yw/vmix / (rhoc*d) + yr/vmix * vr(pr, Tr) - 1 == 0
+  p - pr == 0
+  T - Tr == 0
+
+  with Jacobian w.r.t [d, Tw, pr, Tr]
+
+  [d(ef_w)dd, d(ef_w)d(Tw), d(ef_r)d(pr), d(ef_r)d(Tr)]
+  [-yw/(vmix*rhoc*d*d), 0,  yr/vmix*d(v_r)/d(pr), yr/vmix * d(v_r)/d(Tr)]
+  [d(p_w)dd, d(p_w)/dT, -1, 0]
+  [0, 1, 0, -1]
+  '''
+
+  ''' Allocate residual vector '''
+  f = np.ones((4,))
+  f[3] = T - Tr
+
+  ''' Compute coefficient matrix C, derivative matrix D such that elementwise
+  J_ij = C_ij D_ij, C is dependent only on yw, yr, e_mix, v_mix, and D_ij
+  disjointly dependent on everything else. '''
+  C = np.ones((4,4))
+  D = np.ones((4,4))
+  yr = 1.0 - yw
+  C[0,0] = yw/e_mix
+  C[0,1] = yw/e_mix
+  C[0,2] = yr/e_mix
+  C[0,3] = yr/e_mix
+  C[1,0] = yw/v_mix
+  C[1,2] = yr/v_mix
+  C[1,3] = yr/v_mix
+
+  # dew/dd
+  # dew/dT
+  # der/dpr
+  # der/Tr
+  D[1,0] = -1.0/(d*d*rhoc)
+  D[1,1] = 0.0
+  # dvr/dpr
+  # dvr/Tr
+  D[2,2] = -1.0
+  D[2,3] = 0.0
+  D[3,0] = 0.0
+  D[3,1] = 1.0
+  D[3,2] = 0.0
+  D[3,3] = -1.0
+
+  ''' Compute residual components. '''
+  rhom = rho_m0 * (1.0 + (pr - p_m0) / K)
+  derdpr = ym / (ym + ya) * pr / (rhom*rhom) * rho_m0 / K
+  derdTr = (ym * c_v_m0 + ya * R_a / (gamma_a - 1.0)) / (ym + ya)
+  dvrdpr = - (ym * rho_m0 / K / (rhom * rhom) + ya * R_a * Tr / (pr * pr)) \
+    / (ym + ya)
+  dvrdTr = ya / (ym + ya) * R_a / pr
+
+  D[0,2] = derdpr
+  D[0,3] = derdTr
+  D[1,2] = dvrdpr
+  D[1,3] = dvrdTr
+
+  ''' Compute saturation hypothetical at exact pressure. '''
+
+  if T < Tc:
+    # Compute saturation curves
+    sat_triple = prho_sat(T)
+    psat, rho_satl, rho_satv = \
+      sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+
+    pmix = psat
+    # Compute steam fraction (fraction vapor mass per total water mass)
+    x = (1.0 / rhow - 1.0 / rho_satl) / (1.0 / rho_satv - 1.0 / rho_satl)
+    # Compute temperature update using saturation relation
+    d0 = rho_satl/rhoc
+    d1 = rho_satv/rhoc
+    _phirall_0 = fused_phir_all(d0, Tc/T)
+    _phirall_1 = fused_phir_all(d1, Tc/T)
+    _phi0all_0 = fused_phi0_all(d0, Tc/T)
+    _phi0all_1 = fused_phi0_all(d1, Tc/T)
+    ''' Derivatives along Maxwell-constr. level set G(t, d0, d1) = 0 '''
+    # Vector components of partial dG/dt = (dG0/dt; dG1/dt)
+    dG0dt = d1*_phirall_1.phir_dt + _phirall_1.phir_t + _phi0all_1.phi0_t \
+      - d0*_phirall_0.phir_dt - _phirall_0.phir_t - _phi0all_0.phi0_t
+    dG1dt = d0*d0*_phirall_0.phir_dt - d1*d1*_phirall_1.phir_dt
+    # Vector components of partial dG/d0
+    dG0dd0 = -2.0*_phirall_0.phir_d \
+      - d0*_phirall_0.phir_dd - _phi0all_0.phi0_d
+    dG1dd0 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0*d0*_phirall_0.phir_dd
+    # Vector components of partial dG/d1
+    dG0dd1 = 2.0*_phirall_1.phir_d \
+      + d1*_phirall_1.phir_dd + _phi0all_1.phi0_d
+    dG1dd1 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1*d1*_phirall_1.phir_dd
+    # Compute d(d0)/dt and d(d1)/dt constrainted to level set of G
+    _det = dG0dd0 * dG1dd1 - dG0dd1 * dG1dd0
+    dd0dt = -(dG1dd1 * dG0dt - dG0dd1 * dG1dt) / _det
+    dd1dt = -(-dG1dd0 * dG0dt + dG0dd0 * dG1dt) / _det
+    # Construct derivatives of volume:
+    #   dv0/dt = partial(v0, t) + partial(v0, d) * dd0/dt
+    #   dv0/dT = dv0/dt * dt/dT
+    dv0dT = -1.0/(rhoc * d0 * d0) * dd0dt * (-Tc/(T*T))
+    dv1dT = -1.0/(rhoc * d1 * d1) * dd1dt * (-Tc/(T*T))
+    # Construct derivatives of internal energy
+    du0dT = R * Tc * (
+      (_phirall_0.phir_dt + _phi0all_0.phi0_dt) * dd0dt
+      + (_phirall_0.phir_tt + _phi0all_0.phi0_tt)
+    ) * (-Tc/(T*T))
+    du1dT = R * Tc * (
+      (_phirall_1.phir_dt + _phi0all_1.phi0_dt) * dd1dt
+      + (_phirall_1.phir_tt + _phi0all_1.phi0_tt)
+    ) * (-Tc/(T*T))
+    # Construct dx/dT (change in steam fraction subject to mixture
+    #   conditions) as partial(x, T) + partial(x, v) * dv/dT
+    v  = 1.0/(d*rhoc)
+    vl = 1.0/(d0*rhoc)
+    vv = 1.0/(d1*rhoc)
+
+    # Compute partials
+    partial_dxdT = ((v - vv) * dv0dT - (v - vl) * dv1dT) \
+      / ((vv - vl) * (vv - vl))
+    partial_dxdv =  1.0 / (vv - vl)
+    partial_dxdd = -partial_dxdv / (d * d * rhoc)
+    # Compute saturation-pressure-temperature slope
+    dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+      * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+        - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+    uv = R * Tc * (_phirall_1.phir_t + _phi0all_1.phi0_t)
+    ul = R * Tc * (_phirall_0.phir_t + _phi0all_0.phi0_t)
+
+    ew = x * uv + (1.0 - x) * ul
+    dewdT = (uv - ul) * partial_dxdT + x*du1dT + (1.0-x)*du0dT
+    dewdd = (uv - ul) * partial_dxdd
+
+    lv_hypothetical = {
+      "x": x,
+      "ew": ew,
+      "v": v,
+      "ul": ul,
+      "uv": uv,
+      "vl": vl,
+      "vv": vv,
+      "dewdT": dewdT,
+      "dpsatdT": dpsatdT,
+      "partial_dxdT": partial_dxdT,
+      "partial_dxdv": partial_dxdv,
+      "partial_dxdd": partial_dxdd,
+      "dv0dT": dv0dT,
+      "dv1dT": dv1dT,
+      "du0dT": du0dT,
+      "du1dT": du1dT,
+    }
+    
+    # Vapor-boundary overshooting correction
+    # dvdT = (vv - vl) * dxdT + x*dv1dT + (1.0-x)*dv0dT
+    # dT_to_v_bdry = (vv - v) / (dvdT - dv1dT)
+  else:
+    lv_hypothetical = {}
+
+  ''' Compute dew/dd, dew/dT '''
+
+  if T < Tc:
+    if rho_satv < d * rhoc < rho_satl:
+      # Load LV hypotheticals
+      dewdd = dewdd
+      dewdT = dewdT
+      ew = ew
+      p = psat
+      dpdd = 0.0
+      dpdT = dpsatdT
+    else:
+      # Pure phase
+      _phirall = fused_phir_all(d, t)
+      dewdd = R * Tc * _phirall.phir_dt
+      ew = R * Tc * (_phirall.phir_t + phi0_t(d, t))
+      dewdT = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
+      p = d * rhoc * R * T * (1.0 + d * _phirall.phir_d)
+      dpdd = rhoc * R * T * (1.0 + 2.0 * d * _phirall.phir_d
+             + d * d * _phirall.phir_dd)
+      dpdT = d * rhoc * R + d * d * rhoc * R * T * (
+        _phirall.phir_dt * (-Tc/(T*T)))
+  else:
+    # Pure phase
+    _phirall = fused_phir_all(d, t)
+    dewdd = R * Tc * _phirall.phir_dt
+    ew = R * Tc * (_phirall.phir_t + phi0_t(d, t))
+    dewdT = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
+    p = d * rhoc * R * T * (1.0 + d * _phirall.phir_d)
+    dpdd = rhoc * R * T * (1.0 + 2.0 * d * _phirall.phir_d
+             + d * d * _phirall.phir_dd)
+    dpdT = d * rhoc * R + d * d * rhoc * R * T * (
+        _phirall.phir_dt * (-Tc/(T*T)))
+
+  # Complete fill-in
+  em = c_v_m0 * Tr + magma_mech_energy(pr, K, p_m0, rho_m0)
+  ea = R_a / (gamma_a - 1.0) * Tr
+  f[0] = (yw * ew + ym * em + ya * ea)/ e_mix  - 1.0
+  f[1] = (yw / (rhoc * d) \
+        + ym / rhom \
+        + ya * R_a * Tr / pr) / v_mix - 1.0
+  f[2] = p - pr
+  D[0,0] = dewdd
+  D[0,1] = dewdT
+  D[2,0] = dpdd
+  D[2,1] = dpdT
+
+  return f, C, D, lv_hypothetical, p
+
 ''' Vectorizing wrappers '''
 
 @cython.boundscheck(False)
@@ -813,7 +1053,7 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
     # TODO: replace binary decision
     if data[4*i+3] > 1e-4:
       # Treat immediately as air-only
-      _p = data[4*i] / (gamma_a - 1.0)        # en / (gamma-1)
+      _p = data[4*i] * (gamma_a - 1.0)        # en / (gamma-1)
       data[4*i+2] = _p / (data[4*i+1] * R_a)  # p / (rho R)
       data[4*i+1] = _p
       data[4*i+3] = sqrt(gamma_a * R_a * data[4*i+2])

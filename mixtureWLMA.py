@@ -11,6 +11,9 @@ try:
   # Import locally Cython compiled modules
   from . import float_phi_functions
   from . import float_mix_functions
+except ImportError:
+  import float_phi_functions
+  import float_mix_functions
 except ModuleNotFoundError as e:
   raise ModuleNotFoundError("Cython module for scalar phi computations not "
     + "found. Install Cython, update python ()>=3.9) and compile locally." ) from e
@@ -119,9 +122,9 @@ class WLMA():
     # Replace yW > 1 - 1e-9 with yW = 1 - 1e-9
     y[...,1:2] = np.clip(y[...,1:2], 0.0, 1-1e-9)
     # Readjust other mass fractions to add up to one
-    y[...,2:3] = 1.0 - y[...,1:2]
+    y /= y.sum(axis=-1, keepdims=True)
     yw = y[...,1:2]
-    ya = np.zeros_like(yw)
+    ya = y[...,0:1]
     # Compute internal energy
     kinetic = 0.5 * (momentum * momentum).sum(axis=-1, keepdims=True) / rho_mix
     vol_energy_internal = vol_energy - kinetic
@@ -136,8 +139,8 @@ class WLMA():
     p           = np.reshape(_out[1::4], yw.shape)
     T           = np.reshape(_out[2::4], yw.shape)
     sound_speed = np.reshape(_out[3::4], yw.shape)
-    # Postprocess for volume fraction
-    volfracW = arho_vec[...,1:2] / rhow
+    # Postprocess for volume fraction TODO: handle rhow == 0 case
+    volfracW = arho_vec[...,1:2] / (1e-16 + rhow)
 
     # TODO: propagate error
     pass
