@@ -1655,8 +1655,8 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   fractions, water density, and temperature as
     1e-7 <= yw <= 1-1e-7,
     1e-7 <= ya <= 1-1e-7,
-    0.1 <= rhow <= 1050, ?1260
-    280 <= T <= 1500. ?273.16 to 2273.15
+    0.1 <= rhow <= 1260
+    278.16 <= T <= 1500.
   The two constraint equations are as follows. 
     let ef_w = y_w * e_w/e_mix: energy fraction of water
     let ef_r = y_r * e_r/e_mix: energy fraction of residual components
@@ -1844,7 +1844,12 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
 # @cython.cdivision(True)
 def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
   np.ndarray yw, np.ndarray ya, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0,
-  DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a) -> np.ndarray:
+  DTYPE_t c_v_m0, DTYPE_t R_a, DTYPE_t gamma_a, logger=False) -> np.ndarray:
+  ''' Python interface for the mapping
+    (E, rho_mix, yw, ya; ...params...) -> (rhow, pmix, T, c).
+  Maps arrays to arrays. Output is interlaced as (rhow, pmix, T, c).
+  For logging, pass through logger with method
+  log(self, level:str, data:dict). '''
   cdef int i = 0
   cdef int N = yw.size
   cdef TriplerhopT out_triple
@@ -1864,26 +1869,17 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
     raise ValueError("Size of vector inputs are either not the same.")
 
   for i in range(N):
-    # TODO: replace binary decision
-    if data[4*i+3] > 1e-4:
-      # Treat immediately as air-only
-      _p = data[4*i] * (gamma_a - 1.0)        # en / (gamma-1)
-      data[4*i+2] = _p / (data[4*i+1] * R_a)  # p / (rho R)
-      data[4*i+1] = _p
-      data[4*i+3] = sqrt(gamma_a * R_a * data[4*i+2])
-      data[4*i] = 0.0
-    else:  
-      # Use packed inputs (vol_energy, rho_mix, yw, ya)
-      out_triple = conservative_to_pT_WLMA(
-        data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
-        K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
-      # Reuse data track as output
-      data[4*i]   = out_triple.rhow
-      data[4*i+1] = out_triple.p
-      data[4*i+2] = out_triple.T
-      # TODO: replace with direct postprocess with access to last phir_*
-      # TODO: replace sound speed computation for mixture
-      data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
+    # Use packed inputs (vol_energy, rho_mix, yw, ya)
+    out_triple = conservative_to_pT_WLMA_bn(
+      data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
+      K, p_m0, rho_m0, c_v_m0, R_a, gamma_a, logger=logger)
+    # Reuse data track as output
+    data[4*i]   = out_triple.rhow
+    data[4*i+1] = out_triple.p
+    data[4*i+2] = out_triple.T
+    # TODO: replace with direct postprocess with access to last phir_*
+    # TODO: replace sound speed computation for mixture
+    data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
   # return rhow, pmix, T
   return data # [...,:] = [rhow, pmix, T, 0.0]
 
