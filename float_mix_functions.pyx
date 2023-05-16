@@ -1242,7 +1242,6 @@ cdef struct OutKernel2:
   DTYPE_t step1
   DTYPE_t pmix
   int region_type
-
 cdef struct WLMAParams:
   DTYPE_t vol_energy
   DTYPE_t rho_mix
@@ -1254,13 +1253,28 @@ cdef struct WLMAParams:
   DTYPE_t c_v_m0
   DTYPE_t R_a
   DTYPE_t gamma_a
+# Enumerate flag types
+cdef int _FLAG_L = 0
+cdef int _FLAG_LV = 1
+cdef int _FLAG_V = 2
+cdef int _FLAG_C = 3
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef OutKernel2 kernel2_WLMA(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
-  ''' Return compatibility equations and derivatives. '''
+  ''' Returns residuals of the system of two equations for energy fraction and
+  volume fraction summation conditions.
+  Returns:
+    {f0, f1, step0, step1, pmix, region_type}
+  
+  The energy-volume system is as follows.
+  let ef_w = y_w * e_w/e_mix: energy fraction of water
+  let ef_r = y_r * e_r/e_mix: energy fraction of residual components
+  ef_w + ef_r - 1 == 0
+  yw/vmix / (rhoc*d) + yr/vmix * vr(pr, Tr) - 1 == 0
+  '''
 
   # Zealous unpacking
   cdef DTYPE_t vol_energy, rho_mix, yw, ya, K, \
@@ -1269,135 +1283,105 @@ cdef OutKernel2 kernel2_WLMA(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
     params.vol_energy, params.rho_mix, params.yw, params.ya, params.K, \
     params.p_m0, params.rho_m0, params.c_v_m0, params.R_a, params.gamma_a
 
-  cdef DTYPE_t ym = 1.0 - yw - ya
-  cdef DTYPE_t v_mix = 1.0/rho_mix
-  cdef DTYPE_t pmix, t, rhow, x, dT
-  cdef DTYPE_t psat, rho_satl, rho_satv, d0, d1, e_mix
-  cdef Pair out_pair
-  cdef bint is_supercritical, is_mixed
+  # Compute dependents
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t ym = 1.0 - (yw + ya)
+  # Compute water phase density as dependent
+  cdef DTYPE_t rhow = rho_mix * yw / alpha_w
+  # Set bound on rhow based on pressure bound [, 1 GPa]
+  rhow = max(1e-9, rhow)
+  rhow = min(1260.0, rhow)
+  cdef DTYPE_t d = rhow / rhoc
+
+  ''' Compute saturation state at exact pressure. '''
   cdef SatTriple sat_triple
+  cdef DTYPE_t psat, x, rho_satl, rho_satv, d0, d1
   cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
   cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
-  cdef Derivatives_phir_0_1_2 _phirall
   cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
-  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
-  cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
-  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
-  cdef DTYPE_t _c1, Z, Z_d, Z_T, d1psi, d2psi, drhowdT, rhom, drhomdT, drhomadT
-  cdef DTYPE_t d_inner_step
-  cdef DTYPE_t c_v_a = R_a / (gamma_a - 1.0)
-  # Enumerate flag types
-  cdef int _FLAG_L = 0
-  cdef int _FLAG_LV = 1
-  cdef int _FLAG_V = 2
-  cdef int _FLAG_C = 3
-
-  ''' The energy-volume system:
-  let ef_w = y_w * e_w/e_mix: energy fraction of water
-  let ef_r = y_r * e_r/e_mix: energy fraction of residual components
-
-  ef_w + ef_r - 1 == 0
-  yw/vmix / (rhoc*d) + yr/vmix * vr(pr, Tr) - 1 == 0
-
-  with Jacobian w.r.t [alpha_w, T].
-  '''
-  # Compute dependents
-  t = Tc / T
-  ym = 1.0 - yw - ya
-  # Compute water phase density as dependent
-  rhow = rho_mix * yw / alpha_w
-  # Set bound on rhow based on pressure bound [, 1 GPa]
-  rhow = np.clip(rhow, 1e-9, 1260)
-  d = rhow / rhoc
-
-  ''' Allocate matrices '''
-  f = np.ones((2,))
-  J = np.ones((2,2))
-
-  ''' Compute saturation hypothetical at exact pressure. '''
+  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, ul, uv
+  cdef DTYPE_t partial_dxdT, partial_dxdv, partial_dxdd, dvdp, dpsatdT 
+  cdef DTYPE_t ew, dewdT, dewdd
+  cdef int region_type
+  cdef DTYPE_t dpdd, dpdT, pmix
+  cdef Derivatives_phir_0_1_2 _phirall
   if T < Tc:
     # Compute saturation curves
     sat_triple = prho_sat(T)
     psat, rho_satl, rho_satv = \
       sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
-    # Compute steam fraction (fraction vapor mass per total water mass)
-    x = (1.0 / rhow - 1.0 / rho_satl) / (1.0 / rho_satv - 1.0 / rho_satl)
-    # Compute temperature update using saturation relation
-    d0 = rho_satl/rhoc
-    d1 = rho_satv/rhoc
-    _phirall_0 = fused_phir_all(d0, Tc/T)
-    _phirall_1 = fused_phir_all(d1, Tc/T)
-    _phi0all_0 = fused_phi0_all(d0, Tc/T)
-    _phi0all_1 = fused_phi0_all(d1, Tc/T)
-    ''' Derivatives along Maxwell-constr. level set G(t, d0, d1) = 0 '''
-    # Vector components of partial dG/dt = (dG0/dt; dG1/dt)
-    dG0dt = d1*_phirall_1.phir_dt + _phirall_1.phir_t + _phi0all_1.phi0_t \
-      - d0*_phirall_0.phir_dt - _phirall_0.phir_t - _phi0all_0.phi0_t
-    dG1dt = d0*d0*_phirall_0.phir_dt - d1*d1*_phirall_1.phir_dt
-    # Vector components of partial dG/d0
-    dG0dd0 = -2.0*_phirall_0.phir_d \
-      - d0*_phirall_0.phir_dd - _phi0all_0.phi0_d
-    dG1dd0 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0*d0*_phirall_0.phir_dd
-    # Vector components of partial dG/d1
-    dG0dd1 = 2.0*_phirall_1.phir_d \
-      + d1*_phirall_1.phir_dd + _phi0all_1.phi0_d
-    dG1dd1 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1*d1*_phirall_1.phir_dd
-    # Compute d(d0)/dt and d(d1)/dt constrainted to level set of G
-    _det = dG0dd0 * dG1dd1 - dG0dd1 * dG1dd0
-    dd0dt = -(dG1dd1 * dG0dt - dG0dd1 * dG1dt) / _det
-    dd1dt = -(-dG1dd0 * dG0dt + dG0dd0 * dG1dt) / _det
-    # Construct derivatives of volume:
-    #   dv0/dt = partial(v0, t) + partial(v0, d) * dd0/dt
-    #   dv0/dT = dv0/dt * dt/dT
-    dv0dT = -1.0/(rhoc * d0 * d0) * dd0dt * (-Tc/(T*T))
-    dv1dT = -1.0/(rhoc * d1 * d1) * dd1dt * (-Tc/(T*T))
-    # Construct derivatives of internal energy
-    du0dT = R * Tc * (
-      (_phirall_0.phir_dt + _phi0all_0.phi0_dt) * dd0dt
-      + (_phirall_0.phir_tt + _phi0all_0.phi0_tt)
-    ) * (-Tc/(T*T))
-    du1dT = R * Tc * (
-      (_phirall_1.phir_dt + _phi0all_1.phi0_dt) * dd1dt
-      + (_phirall_1.phir_tt + _phi0all_1.phi0_tt)
-    ) * (-Tc/(T*T))
-    # Construct dx/dT (change in steam fraction subject to mixture
-    #   conditions) as partial(x, T) + partial(x, v) * dv/dT
-    v  = 1.0/(d*rhoc)
-    vl = 1.0/(d0*rhoc)
-    vv = 1.0/(d1*rhoc)
-
-    # Compute partials
-    partial_dxdT = ((v - vv) * dv0dT - (v - vl) * dv1dT) \
-      / ((vv - vl) * (vv - vl))
-    partial_dxdv =  1.0 / (vv - vl)
-    partial_dxdd = -partial_dxdv / (d * d * rhoc)
-    # Compute saturation-pressure-temperature slope
-    dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
-      * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
-        - t * (_phirall_1.phir_t - _phirall_0.phir_t))
-    uv = R * Tc * (_phirall_1.phir_t + _phi0all_1.phi0_t)
-    ul = R * Tc * (_phirall_0.phir_t + _phi0all_0.phi0_t)
-
-    ew = x * uv + (1.0 - x) * ul
-    dewdT = (uv - ul) * partial_dxdT + x*du1dT + (1.0-x)*du0dT
-    dewdd = (uv - ul) * partial_dxdd
-
-  ''' Compute dew/dd, dew/dT '''
-  if T < Tc:
     if rho_satv < d * rhoc < rho_satl:
-      # Load LV hypotheticals
-      dewdd = dewdd
-      dewdT = dewdT
-      ew = ew
+      ''' Compute mixed-phase state '''
+      # Compute steam fraction (fraction vapor mass per total water mass)
+      x = (1.0 / rhow - 1.0 / rho_satl) / (1.0 / rho_satv - 1.0 / rho_satl)
+      # Compute temperature update using saturation relation
+      d0 = rho_satl/rhoc
+      d1 = rho_satv/rhoc
+      _phirall_0 = fused_phir_all(d0, Tc/T)
+      _phirall_1 = fused_phir_all(d1, Tc/T)
+      _phi0all_0 = fused_phi0_all(d0, Tc/T)
+      _phi0all_1 = fused_phi0_all(d1, Tc/T)
+      ''' Derivatives along Maxwell-constr. level set G(t, d0, d1) = 0 '''
+      # Vector components of partial dG/dt = (dG0/dt; dG1/dt)
+      dG0dt = d1*_phirall_1.phir_dt + _phirall_1.phir_t + _phi0all_1.phi0_t \
+        - d0*_phirall_0.phir_dt - _phirall_0.phir_t - _phi0all_0.phi0_t
+      dG1dt = d0*d0*_phirall_0.phir_dt - d1*d1*_phirall_1.phir_dt
+      # Vector components of partial dG/d0
+      dG0dd0 = -2.0*_phirall_0.phir_d \
+        - d0*_phirall_0.phir_dd - _phi0all_0.phi0_d
+      dG1dd0 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0*d0*_phirall_0.phir_dd
+      # Vector components of partial dG/d1
+      dG0dd1 = 2.0*_phirall_1.phir_d \
+        + d1*_phirall_1.phir_dd + _phi0all_1.phi0_d
+      dG1dd1 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1*d1*_phirall_1.phir_dd
+      # Compute d(d0)/dt and d(d1)/dt constrainted to level set of G
+      _det = dG0dd0 * dG1dd1 - dG0dd1 * dG1dd0
+      dd0dt = -(dG1dd1 * dG0dt - dG0dd1 * dG1dt) / _det
+      dd1dt = -(-dG1dd0 * dG0dt + dG0dd0 * dG1dt) / _det
+      # Construct derivatives of volume:
+      #   dv0/dt = partial(v0, t) + partial(v0, d) * dd0/dt
+      #   dv0/dT = dv0/dt * dt/dT
+      dv0dT = -1.0/(rhoc * d0 * d0) * dd0dt * (-Tc/(T*T))
+      dv1dT = -1.0/(rhoc * d1 * d1) * dd1dt * (-Tc/(T*T))
+      # Construct derivatives of internal energy
+      du0dT = R * Tc * (
+        (_phirall_0.phir_dt + _phi0all_0.phi0_dt) * dd0dt
+        + (_phirall_0.phir_tt + _phi0all_0.phi0_tt)
+      ) * (-Tc/(T*T))
+      du1dT = R * Tc * (
+        (_phirall_1.phir_dt + _phi0all_1.phi0_dt) * dd1dt
+        + (_phirall_1.phir_tt + _phi0all_1.phi0_tt)
+      ) * (-Tc/(T*T))
+      # Construct dx/dT (change in steam fraction subject to mixture
+      #   conditions) as partial(x, T) + partial(x, v) * dv/dT
+      v  = 1.0/(d*rhoc)
+      vl = 1.0/(d0*rhoc)
+      vv = 1.0/(d1*rhoc)
+      # Compute partials
+      partial_dxdT = ((v - vv) * dv0dT - (v - vl) * dv1dT) \
+        / ((vv - vl) * (vv - vl))
+      partial_dxdv =  1.0 / (vv - vl)
+      partial_dxdd = -partial_dxdv / (d * d * rhoc)
+      # Compute saturation-pressure-temperature slope
+      dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+        * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+          - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+      uv = R * Tc * (_phirall_1.phir_t + _phi0all_1.phi0_t)
+      ul = R * Tc * (_phirall_0.phir_t + _phi0all_0.phi0_t)
+      # Compute energy and its derivatives
+      ew = x * uv + (1.0 - x) * ul
+      dewdd = (uv - ul) * partial_dxdd
+      dewdT = (uv - ul) * partial_dxdT + x*du1dT + (1.0-x)*du0dT
+      # Compute commons
       pmix = psat
       dpdd = 0.0
       dpdT = dpsatdT
       region_type = _FLAG_LV
     else:
-      # Pure phase
+      # Compute common quantities for pure phase subcritical
       _phirall = fused_phir_all(d, t)
-      dewdd = R * Tc * _phirall.phir_dt
       ew = R * Tc * (_phirall.phir_t + phi0_t(d, t))
+      dewdd = R * Tc * _phirall.phir_dt
       dewdT = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
       pmix = d * rhoc * R * T * (1.0 + d * _phirall.phir_d)
       dpdd = rhoc * R * T * (1.0 + 2.0 * d * _phirall.phir_d
@@ -1406,10 +1390,10 @@ cdef OutKernel2 kernel2_WLMA(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
         1.0 + d * _phirall.phir_d - t * d * _phirall.phir_dt)
       region_type = _FLAG_V if d * rhoc <= rho_satv else _FLAG_L
   else:
-    # Pure phase
+    # Compute common quantities for pure phase supercritical
     _phirall = fused_phir_all(d, t)
-    dewdd = R * Tc * _phirall.phir_dt
     ew = R * Tc * (_phirall.phir_t + phi0_t(d, t))
+    dewdd = R * Tc * _phirall.phir_dt
     dewdT = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
     pmix = d * rhoc * R * T * (1.0 + d * _phirall.phir_d)
     dpdd = rhoc * R * T * (1.0 + 2.0 * d * _phirall.phir_d
@@ -1420,55 +1404,59 @@ cdef OutKernel2 kernel2_WLMA(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
 
   ''' Compute output '''
   # Compute dependents, with water pressure as mixture pressure
-  e_mix = vol_energy / rho_mix
-  rhoa = pmix / (R_a * T)
-  rhom = rho_m0 * (1.0 + (pmix - p_m0) / K)
-  alphaa = rho_mix * ya / rhoa
-  alpham = rho_mix * ym / rhom
-  # Clip water energy
-  if ew > 5e6:
-    ew = 5e6
-  elif ew < 0.0:
-    ew = 0.0
-  ea = R_a / (gamma_a - 1.0) * T
-  em = c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0)
-  # Compute energy fractions (symbol eps)
-  epsw = yw * ew / e_mix
-  epsa = ya * ea / e_mix
-  epsm = ym * em / e_mix
+  cdef DTYPE_t e_mix = vol_energy / rho_mix
+  cdef DTYPE_t rhoa = pmix / (R_a * T)
+  cdef DTYPE_t rhom = rho_m0 * (1.0 + (pmix - p_m0) / K)
+  cdef DTYPE_t alphaa = rho_mix * ya / rhoa
+  cdef DTYPE_t alpham = rho_mix * ym / rhom
+  # Clip water energy for range of validity (avoids issue if energy is evaluated
+  #   from the Helmholtz potential in the phase equilibrium region)
+  ew = min(ew, 5e6)
+  ew = max(ew, 1e-6)
+  cdef DTYPE_t ea = R_a / (gamma_a - 1.0) * T
+  cdef DTYPE_t em = c_v_m0 * T + magma_mech_energy(pmix, K, p_m0, rho_m0)
   # Chain rule for d pressure w.r.t. alpha_w
-  dpdaw = -1.0 / rhoc * dpdd * rho_mix * yw / (alpha_w * alpha_w)
+  cdef DTYPE_t dpdaw = -1.0 / rhoc * dpdd * rho_mix * yw / (alpha_w * alpha_w)
+
+  ''' Assemble Jacobian and residual vector '''
+  cdef DTYPE_t _f0, _f1
+  cdef DTYPE_t _J00, _J01, _J10, _J11
   # Gradient of energy condition w.r.t. [alpha_w, T]
-  J[0,1] = 1.0 / e_mix * (yw * dewdT + ya * R_a / (gamma_a - 1.0) + ym * c_v_m0
-    + ym * pmix * rho_m0 / (K * rhom * rhom) * dpdT)
-  J[0,0] = 1.0 / e_mix * (-yw / rhoc * dewdd * rho_mix * yw / (alpha_w*alpha_w)
+  _J00 = 1.0 / e_mix * (-yw / rhoc * dewdd * rho_mix * yw / (alpha_w * alpha_w)
     + ym * pmix * rho_m0 / (K * rhom * rhom) * dpdaw)
+  _J01 = 1.0 / e_mix * (yw * dewdT + ya * R_a / (gamma_a - 1.0) + ym * c_v_m0
+    + ym * pmix * rho_m0 / (K * rhom * rhom) * dpdT)
   # Gradient of volume condition w.r.t. [alpha_w, T]
-  J[1,1] = rho_mix * ya * R_a / pmix \
-    + rho_mix * (ya * (-R_a * T / (pmix*pmix))  + ym * (-rho_m0 / (K * rhom * rhom))) * dpdT
-  J[1,0] = 1 - rho_mix * ya * R_a * T /(pmix * pmix)* dpdaw \
+  _J10 = 1.0 - rho_mix * ya * R_a * T /(pmix * pmix) * dpdaw \
     - rho_mix * ym * rho_m0 / (K * rhom * rhom) * dpdaw
-  f[0] = epsw + epsa + epsm - 1.0
-  f[1] = alpha_w + alphaa + alpham - 1.0
+  _J11 = rho_mix * ya * R_a / pmix \
+    + rho_mix * (ya * (-R_a * T / (pmix * pmix)) \
+    + ym * (-rho_m0 / (K * rhom * rhom))) * dpdT
+  # Energy condition
+  _f0 = (yw * ew + ya * ea + ym * em) / e_mix - 1.0
+  # Volume condition
+  _f1 = alpha_w + alphaa + alpham - 1.0
   # Compute step
-  _temp = -np.linalg.solve(J, f)
+  _det = _J00 * _J11 - _J01 * _J10
+  cdef DTYPE_t _step0 = -(_J11 * _f0 - _J01 * _f1) / _det
+  cdef DTYPE_t _step1 = -(-_J10 * _f0 + _J00 * _f1) / _det
   
-  return OutKernel2(f[0], f[1], _temp[0], _temp[1], pmix, region_type)
+  return OutKernel2(_f0, _f1, _step0, _step1, pmix, region_type)
 
 ''' Robust WLMA pT function '''
 
-# Define linearization point
-cdef DTYPE_t ref_T = 300
-cdef DTYPE_t ref_ew = u(996, ref_T)
-cdef DTYPE_t ref_c_v = c_v(996, ref_T)
-cdef int NUM_ITER_BACKTRACK = 16
-cdef int NUM_ITER_PHASE_BACKTRACK = 11
-
+# Set numerics constants
+cdef unsigned int NUM_ITER_BACKTRACK = 16
+cdef unsigned int NUM_ITER_PHASE_BACKTRACK = 11
+# Define output type of iterate_backtrack_box
 cdef struct OutIterate:
   DTYPE_t U0
   DTYPE_t U1
   DTYPE_t fnorm
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
 cpdef OutIterate iterate_backtrack_box(DTYPE_t U0, DTYPE_t U1, WLMAParams params,
     logger=False):
   ''' Backtracked Newton with box bounds, mapping
@@ -1600,12 +1588,65 @@ cpdef OutIterate iterate_backtrack_box(DTYPE_t U0, DTYPE_t U1, WLMAParams params
     
   return OutIterate(U_next[0], U_next[1], f_at_t_max)
 
-"""@cython.boundscheck(False)
+@cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
-@cython.cdivision(True)
-cpdef TriplerhopT conservative_to_pT_WLMA_bn(DTYPE_t vol_energy, DTYPE_t rho_mix,
-  DTYPE_t yw, DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0)
+cpdef DTYPE_t p_LMA(DTYPE_t T, DTYPE_t ya, WLMAParams params):
+  ''' Compute pressure in an ideal gas + LM system. '''
+  cdef DTYPE_t ym = 1.0 - ya
+  # Define useful quantities: additive constant to magma EOS
+  cdef DTYPE_t sym1 = params.K - params.p_m0
+  # Define partial pressure of gas mixture
+  cdef DTYPE_t sym2 = (ya * params.R_a) * params.rho_mix * T
+  # Define b (from quadratic formula)
+  cdef DTYPE_t b = -(sym1 - sym2 
+    - params.K / params.rho_m0 * ym * params.rho_mix)
+  # Define total gas volume fraction
+  cdef DTYPE_t phi =  0.5 / sym1 * (-b + sqrt(b*b + 4.0*sym1*sym2))
+  return (ya * params.R_a) * params.rho_mix * T \
+    + (1.0 - phi) * (params.p_m0 - params.K) \
+    + (params.K / params.rho_m0 * ym * params.rho_mix)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+cpdef DTYPE_t phi_LMA(DTYPE_t T, DTYPE_t ya, WLMAParams params):
+  ''' Compute gas volume fraction in an ideal gas + LM system. '''
+  cdef DTYPE_t ym = 1.0 - ya
+  # Define useful quantities: additive constant to magma EOS
+  cdef DTYPE_t sym1 = params.K - params.p_m0
+  # Define partial pressure of gas mixture
+  cdef DTYPE_t sym2 = (ya * params.R_a) * params.rho_mix * T
+  # Define b (from quadratic formula)
+  cdef DTYPE_t b = -(sym1 - sym2 
+    - params.K / params.rho_m0 * ym * params.rho_mix)
+  return  0.5 / sym1 * (-b + sqrt(b*b + 4.0*sym1*sym2))
+
+# Set numerics for finding initial guesses
+cdef unsigned int NUM_ITER_BISECTION_INIT = 16
+# Set numerics for solving energy/volume fraction equations
+cdef unsigned int NUM_ITER_NEWTON = 32
+cdef DTYPE_t FTOL_NEWTON = 1e-12
+
+# Define linearization point at 300 K, 1 bar
+cdef DTYPE_t ref_T_atm = 300.0
+cdef DTYPE_t ref_rhow_atm = 996.55634039
+cdef DTYPE_t ref_ew_atm = u(ref_rhow_atm, ref_T_atm)
+cdef DTYPE_t ref_c_v_atm = c_v(ref_rhow_atm, ref_T_atm)
+# Define linearization point at 1000 K, 50 MPa
+cdef DTYPE_t ref_T_hot0 = 1000.0
+cdef DTYPE_t ref_rhow_hot0 = 123.48077675
+cdef DTYPE_t ref_ew_hot0 = u(ref_rhow_hot0, ref_T_hot0)
+cdef DTYPE_t ref_c_v_hot0 = c_v(ref_rhow_hot0, ref_T_hot0)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+# @cython.cdivision(True)
+cpdef TriplerhopT conservative_to_pT_WLMA_bn(
+  DTYPE_t vol_energy, DTYPE_t rho_mix, DTYPE_t yw, DTYPE_t ya,
+  DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0, DTYPE_t c_v_m0,
+  DTYPE_t R_a, DTYPE_t gamma_a, logger=False):
   ''' Map from conservative to pressure-temperature variables for WLMA model.
   Uses bisection + Newton (bn) to compute initial guesses based on the
   approximate regime of the inputs (approximate the phase of water) followed
@@ -1614,241 +1655,186 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(DTYPE_t vol_energy, DTYPE_t rho_mix
   fractions, water density, and temperature as
     1e-7 <= yw <= 1-1e-7,
     1e-7 <= ya <= 1-1e-7,
-    0.1 <= rhow <= 1050,
-    280 <= T <= 1500.
+    0.1 <= rhow <= 1050, ?1260
+    280 <= T <= 1500. ?273.16 to 2273.15
   The two constraint equations are as follows. 
     let ef_w = y_w * e_w/e_mix: energy fraction of water
     let ef_r = y_r * e_r/e_mix: energy fraction of residual components
     eqn ef_w + ef_r - 1 == 0
     eqn yw/vmix / (rhoc*d) + yr/vmix * vr(pr, Tr) - 1 == 0.
   '''
-  cdef DTYPE_t ym = 1.0 - yw - ya
-  cdef DTYPE_t v_mix = 1.0/rho_mix
-
-  cdef DTYPE_t pmix, t, rhow, x, dT
-  cdef DTYPE_t psat, rho_satl, rho_satv, d0, d1, e_mix
-  cdef Pair out_pair
-  cdef bint is_supercritical, is_mixed
-  cdef SatTriple sat_triple
-  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
-  cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
-  cdef Derivatives_phir_0_1_2 _phirall
-  cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
-  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, v, vl, vv, dvdT, dT_to_v_bdry
-  cdef DTYPE_t partial_dxdT, partial_dxdv, dvdp, dpsatdT, dxdT 
-  cdef DTYPE_t uv, ul, dewdT, dedT, demdT, curr_energy, _c_v_w, _u
-  cdef DTYPE_t _c1, Z, Z_d, Z_T, d1psi, d2psi, drhowdT, rhom, drhomdT, drhomadT
-  cdef DTYPE_t d_inner_step
-  cdef DTYPE_t c_v_a = R_a / (gamma_a - 1.0)
-  # Enumerate flag types
-  cdef int _FLAG_L = 0
-  cdef int _FLAG_LV = 1
-  cdef int _FLAG_V = 2
-  cdef int _FLAG_C = 3
-
-  ''' The energy-volume system:
-  
-  '''
-  # Compute dependents
-  t = Tc / T
-  ym = 1.0 - yw - ya
-  # Compute water phase density as dependent
-  rhow = rho_mix * yw / alpha_w
-  # Set bound on rhow based on pressure bound [, 1 GPa]
-  rhow = np.clip(rhow, 1e-9, 1260)
-  d = rhow / rhoc
-def iter_solve1(vol_energy, rho_mix, yw, ya, dump_state=False):
-  msg_list = []
-
-  if vol_energy * rho_mix == 0:
-    return 0.0, 0.0, msg_list
-
-  kern = lambda U0, U1: float_mix_functions.kernel2_WLMA(
-    U0, U1,
-    vol_energy, rho_mix, yw, ya,
+  # Compute magma mass fraction (using ordering stable for yw, ya ~ 0)
+  cdef DTYPE_t ym = 1.0 - (yw + ya)
+  # Parameter Packing
+  cdef WLMAParams params = WLMAParams(vol_energy, rho_mix, yw, ya,
     K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
-  
-  # ym = 1.0 - (ya + yw)
 
-  # Lazy boundary snapping
-  min_y = 1e-14
-  if yw < min_y:
-    yw = min_y
-  ym = 1.0 - (ya + yw)
-  if ym < min_y:
-    ym = min_y
-  # Remove mass fraction from air
-  if yw + ya + ym > 1.0:
-    ya = 1.0 - (yw + ym)
-  
-  def p_LMA(T, yw, ya, ym, get_phi=False):
-    ''' Compute volume fraction of sum of gases (also called porosity). '''
-    # Define useful quantities: additive constant to magma EOS
-    sym1 = K - p_m0
-    # Define partial pressure of gas mixture
-    sym2 = (ya * R_a + yw * 0 * mixtureWLMA.R) * rho_mix * T
-    # Define negative b (from quadratic formula)
-    b = (sym1 - sym2 - K / rho_m0 * ym * rho_mix)
-    phi =  0.5 / sym1 * (b + np.sqrt(b*b + 4*sym1*sym2))
+  ''' Check for endmember/limit cases '''
+  if vol_energy * rho_mix == 0:
+    if logger:
+      logger.log("info", {
+        "message": "vol_energy or rho_mix is zero. Returning zeros."})
+    return TriplerhopT(0.0, 0.0, 0.0)
 
-    if not get_phi:
-      # Return pressure
-      return (ya * R_a + yw * 0 * mixtureWLMA.R) * rho_mix * T \
-        + (1.0 - phi) * (p_m0 - K) + (K / rho_m0 * ym * rho_mix)
-    else:
-      return (ya * R_a + yw * 0 * mixtureWLMA.R) * rho_mix * T \
-        + (1.0 - phi) * (p_m0 - K) + (K / rho_m0 * ym * rho_mix), phi
-  
-  # if ym < 0:
-  #   return 0.0, 0.0, msg_list
-  
-  # # Include latent heat is liquid state must be rejected
-  # if yw * rho_mix <= rhoc:
-  #   e_lv = ref_e_lv
-  # else:
-  #   e_lv = 0
+  cdef DTYPE_t min_y = 1e-14
+  # Clip yw, ym to minimum values
+  yw = max(min_y, yw)
+  ym = max(min_y, ym)
+  # Remove excess from air (best precision order of operations)
+  ya = 1.0 - (yw + ym) if yw + ym + ya > 1.0 else ya
 
-  # Compute temperature guess
-  e_lv = 0
-  _e_diff = vol_energy/rho_mix - yw * (ref_ew + e_lv) \
-    - ya * R_a / (gamma_a - 1.0) * ref_T - ym * c_v_m0 * ref_T
-  _T_init = ref_T + _e_diff \
-    / (yw * ref_c_v + ya * R_a / (gamma_a - 1.0) + ym * c_v_m0)
-  if _T_init < 273.16:
-    _T_init = 273.16
-
-  # Sparse water limit solution
-  # if yw < 1e-5 and ya > 1e-9:
-  #   # Non-iterative pressure
-  #   _p_LMA = p_LMA(_T_init, yw, ya, ym)
-  #   _vol_occupied = ya * R_a * _T_init / _p_LMA \
-  #     + (1.0 - (ya + yw)) / rho_m0 / (1.0 + (_p_LMA - p_m0) / K)
-  #   _alphaw_test = np.clip((1.0/rho_mix - _vol_occupied) * rho_mix, 0.0, rho_mix)
-  #   if False: # _alphaw_test > 0:
-  #     # Add volumefrac-weighted pressure of water
-  #     _p_WLMA = _p_LMA * (1.0 - _alphaw_test) \
-  #       + _alphaw_test * float_mix_functions.p(
-  #         rho_mix * yw / _alphaw_test, _T_init)
-  #   else:
-  #     _p_WLMA = _p_LMA
-  #   return _p_WLMA, _T_init, msg_list
-  
-  # Weighted pressure
-  # alphaw_test = np.clip((1.0/rho_mix - vol_test)*rho_mix, 0.0, rho_mix)
-  # rhow_test = rho_mix * yw / alphaw_test
-  # kern(alphaw_test, 3.90948974e+02)
-  # p_LMA(3.90948974e+02, yw, ya, 1.0 - ya - yw) * (1 - alphaw_test) \
-  #   +alphaw_test * float_mix_functions.p(rhow_test, 3.90948974e+02), \
-  #   p_LMA(3.90948974e+02, yw, ya, 1.0 - ya - yw), \
-  #   solution["p"]
-
-  # Compute stable water volume fraction guess
+  ''' Compute initial guesses for (alphaw, T) heuristically '''
+  # Estimate energy using reference liquid water heat capacity and neglecting
+  #   LM strain
+  cdef DTYPE_t _e_diff = vol_energy/rho_mix - yw * (ref_ew_atm) \
+    - ya * R_a / (gamma_a - 1.0) * ref_T_atm - ym * c_v_m0 * ref_T_atm
+  cdef DTYPE_t _T_init = ref_T_atm + _e_diff \
+    / (yw * ref_c_v_atm + ya * R_a / (gamma_a - 1.0) + ym * c_v_m0)
+  if _T_init > 900:
+    # Use higher linearization point
+    _e_diff = vol_energy/rho_mix - yw * (ref_ew_hot0) \
+      - ya * R_a / (gamma_a - 1.0) * ref_T_hot0 - ym * c_v_m0 * ref_T_hot0
+    _T_init = ref_T_hot0 + _e_diff \
+      / (yw * ref_c_v_hot0 + ya * R_a / (gamma_a - 1.0) + ym * c_v_m0)
+  # Clip temperature values below triple point
+  _T_init = max(273.16, _T_init)
+  cdef SatTriple sat_triple
+  cdef DTYPE_t psat, hyp_rhoa, hyp_rhom, hyp_vw, hyp_x, _alphaw_initLV
+  # (1/3) Compute saturation-aware initial guess
   if _T_init < Tc:
-    _out = float_mix_functions.prho_sat(_T_init)
-    # Hypothetical LV coexistence
-    psat = _out["psat"]
-    h_rhoa = psat / (R_a * _T_init)
-    h_rhom = rho_m0 * (1.0 + (psat - p_m0) / K)
-    h_vw = (1/rho_mix - ya / h_rhoa + ym / h_rhom) / yw
-    h_x = (h_vw - 1.0/_out["rho_satl"]) / (1.0/_out["rho_satv"] - 1.0/_out["rho_satl"])
-    if 0 <= h_x and h_x <= 1:
-      # Accept saturation
-      _alphaw_init =  yw * rho_mix * h_vw
-    elif h_x < 0:
+    # Compute saturation curves
+    sat_triple = prho_sat(_T_init)
+    # Compute hypothetical saturation state (at p_sat(_T_init))
+    psat = sat_triple.psat
+    hyp_rhoa = psat / (R_a * _T_init)
+    hyp_rhom = rho_m0 * (1.0 + (psat - p_m0) / K)
+    # Compute water volume from volume fraction condition
+    hyp_vw = (1.0 / rho_mix - ya / hyp_rhoa + ym / hyp_rhom) / yw
+    # Compute hypothetical steam fraction
+    hyp_x = (hyp_vw - 1.0 / sat_triple.rho_satl) \
+            / (1.0/sat_triple.rho_satv - 1.0/sat_triple.rho_satl)
+    if 0 <= hyp_x and hyp_x <= 1:
+      # Accept saturation state
+      _alphaw_initLV =  yw * rho_mix * hyp_vw
+    elif hyp_x < 0:
       # Liquid-like
-      _alphaw_init = yw * rho_mix / 1000.0
+      _alphaw_initLV = yw * rho_mix / 1000.0
     else:
-      # Vapor-like
-      _alphaw_init = yw * rho_mix / _out["rho_satv"]
+      # Vapor-like extrapolation from superheated vapour (likely inaccurate)
+      _alphaw_initLV = yw * rho_mix / sat_triple.rho_satv
   else:
-    _alphaw_init = yw * rho_mix / rhoc   
-  if _alphaw_init < 0 or _alphaw_init > 1:
-    _alphaw_init = 0.5
-
-  # Compute volume constraint minimizer
-  _a, _b = 1e-7, 1.0
-  _bisection_count = 16
-
-  for i in range(_bisection_count):
+    # Critical density extrapolation (likely inaccurate)
+    _alphaw_initLV = yw * rho_mix / rhoc   
+  # Replace invalid initial guesses with an independent initial guess
+  if _alphaw_initLV < 0 or _alphaw_initLV > 1:    
+    _alphaw_initLV = 0.75
+  # (2/3) Compute volume-fraction-accurate initial guess using bisection;
+  #   if no root is bracketed, _m converges to an endpoint (_a or _b).
+  cdef DTYPE_t _a = 1e-7
+  cdef DTYPE_t _b = 1.0
+  cdef DTYPE_t _m, _alphaw_initVF
+  cdef unsigned int i
+  cdef OutKernel2 kernel_out
+  for i in range(NUM_ITER_BISECTION_INIT):
     _m = 0.5 * (_a + _b)
-    if kern(*np.array([_m, _T_init]))[0][1] > 0:
+    # Compare volume residual sum(vol fracs) - 1.0
+    if kernel2_WLMA(_m, _T_init, params).f1 > 0:
+      # Decrease water volume fraction to mitigate excess volume
+      _b = _m
+    else:
+      # Increase water volume fraction to mitigate insufficient volume
+      _a = _m
+  # Select lower volume fraction bound (heuristic: better landscape along
+  #   search dir)
+  _alphaw_initVF = _a
+  # (3/3) Compute water-density-accurate initial guess (needed for stiff
+  #   liquid water) using bisection
+  _a, _b = 0.01, 1160
+  # Set default initial guess (used if T >= Tc)
+  cdef DTYPE_t _alphaw_initrhow = 0.25
+  cdef DTYPE_t f_vol_m, f_vol_a
+  # Use initial T guess, and bisection search over water density
+  # Compute volume residual for endpoint _a
+  f_vol_a = kernel2_WLMA(yw * rho_mix / _a, _T_init, params).f1    
+  # Bisect for volume condition using water density as the decision variable
+  for i in range(NUM_ITER_BISECTION_INIT):
+    _m = 0.5 * (_a + _b)
+    # Compute volume residual at rho_w = _m
+    f_vol_m = kernel2_WLMA(yw * rho_mix / _m, _T_init, params).f1
+    if f_vol_m * f_vol_a < 0:
+      # m & a different sign; replace b
       _b = _m
     else:
       _a = _m
-  # Volume candidates
-  _alpha_w_candidates = [
-    _alphaw_init, 1e-5, 0.01, .99, 1-1e-5, 0.5, 1-_alphaw_init, _a]
-  
-  # For highly incompressible, low-water component:
-  if _T_init < Tc:
-    # Use initial T guess, and bisection search over water density
-    _f_from_rho_w = lambda rho_w: kern(yw * rho_mix / rho_w, _T_init)[0]
-    _a, _b = 0.01, 1160
-    # Bisect for volume condition using water density as a variable
-    for i in range(_bisection_count):
-      _m = 0.5 * (_a + _b)
-      if _f_from_rho_w(_m)[1] * _f_from_rho_w(_a)[1] < 0:
-        # m & a different sign; replace b
-        _b = _m
-      else:
-        _a = _m
-  dense_water_init = yw * rho_mix / _a
-  _alpha_w_candidates.append(yw * rho_mix / _a)
-
-  _alpha_w_candidates = np.unique(_alpha_w_candidates)
-
+      f_vol_a = f_vol_m
+  # Select volfrac based on midpoint water density
+  _alphaw_initrhow = yw * rho_mix / (0.5 * (_a + _b))
+  # Assemble and select from candidates for water volume fraction initial guess
+  cdef DTYPE_t[8] _alpha_w_candidates = [
+      _alphaw_initLV, # 1.0 - _alphaw_initLV,
+      1e-5, 0.01, 0.5, 0.99, 1.0 - 1e-5,
+      _alphaw_initVF, _alphaw_initrhow]
   # Select best candidate
-  _candidate_performance = [
-    np.linalg.norm(kern(*np.array([_alpha_w, _T_init]))[0])
-    for _alpha_w in _alpha_w_candidates]
-  _alphaw_init = _alpha_w_candidates[np.argmin(_candidate_performance)]
-  U = np.array([_alphaw_init, _T_init])
+  cdef DTYPE_t[8] _candidate_performance
+  cdef unsigned int _argmin_candidate = 0
+  cdef DTYPE_t _min_candidate = 1e32
+  for i in range(8):
+    kernel_out = kernel2_WLMA(_alpha_w_candidates[i], _T_init, params)
+    # Compute squared norm of residuals as performance metric
+    _candidate_performance[i] = kernel_out.f0 * kernel_out.f0 \
+      + kernel_out.f1 * kernel_out.f1
+    if _candidate_performance[i] < _min_candidate:
+      _argmin_candidate = i
+      _min_candidate = _candidate_performance[i]
+  # Selection confidence heuristic
+  if _min_candidate > 0.5:
+    # No-confidence choice
+    _argmin_candidate = 7
 
-  # Check for low vol frac
-  if False and _alphaw_init < 0.001:
-    # Non-iterative pressure
-    if _phi > 0.01:
-      _p_LMA, _phi = p_LMA(_T_init, yw, ya, ym, get_phi=True)
-      _vol_occupied = ya * R_a * _T_init / _p_LMA \
-        + (1.0 - (ya + yw)) / rho_m0 / (1.0 + (_p_LMA - p_m0) / K)
-      _alphaw_test = np.clip((1.0/rho_mix - _vol_occupied) * rho_mix, 0.0, rho_mix)
-      if False: # _alphaw_test > 0:
-        # Add volumefrac-weighted pressure of water
-        _p_WLMA = _p_LMA * (1.0 - _alphaw_test) \
-          + _alphaw_test * float_mix_functions.p(
-            rho_mix * yw / _alphaw_test, _T_init)
-      else:
-        _p_WLMA = _p_LMA
-      return _p_WLMA, _T_init, msg_list
-    # else:
-      # raise NotImplementedError
-    
+  # Finalize initial guess
+  cdef DTYPE_t _alphaw_init = _alpha_w_candidates[_argmin_candidate]
+  if logger:
+    logger.log("info", {
+      "stage": "initialguess",
+      "alphaw_candidates": _alpha_w_candidates,
+      "alphaw_candidate_performance": _candidate_performance,
+      "alphaw_argmin": _argmin_candidate,
+      "T_init": _T_init,
+      "is_low_confidence": _min_candidate > 0.5,
+    })
 
+  ''' Backtracking Newton iteration '''
+  cdef DTYPE_t _fnorm, U0, U1
+  cdef OutIterate out_iterate_backtrack
+  
   # Newton iterations
-  for _k in range(32):
-    # Newton step with backtracking
-    U, f, msg_list = iterate_backtrack_box(U, kern, append_log=msg_list)
-    fnorm = np.linalg.norm(f)
-    if fnorm < 1e-12:
+  U0, U1 = _alphaw_init, _T_init
+  for i in range(NUM_ITER_NEWTON):
+    # Take Newton step with backtracking
+    out_iterate_backtrack = iterate_backtrack_box(U0, U1, params, logger=logger)
+    U0, U1 = out_iterate_backtrack.U0, out_iterate_backtrack.U1
+    if out_iterate_backtrack.fnorm < FTOL_NEWTON:
       break
-    if np.any(np.isnan(f)):
-      fnorm = 1e10
-      continue
-      print(kern(*U), vol_energy, rho_mix, yw)
-      raise Exception("Nan encountered, dumping")
-
-  # Compute final U = [alpha_w, T]
-  T_calc = U[1]
-  rhow = rho_mix * yw / U[0]
-  p_calc = float_mix_functions.p(rhow, U[1])
-  # if np.any(np.abs(p_calc) > 1e9):
-  #   print(kern(*U), vol_energy, rho_mix, yw)
-  #   raise Exception("Dumping")
-
-  if not dump_state:
-    return p_calc, T_calc, msg_list
   else:
-    return p_calc, T_calc, msg_list, (_alpha_w_candidates, _candidate_performance, dense_water_init)"""
+    if logger:
+      logger.log("critical", {
+        "message": "Newton iteration failed.",
+        "fnorm_last": out_iterate_backtrack.fnorm,
+        "fnorm_req": FTOL_NEWTON,
+      })
+  
+  ''' Finalize solve '''
+  cdef DTYPE_t rhow   = rho_mix * yw / U0
+  cdef DTYPE_t T_calc = U1
+  cdef DTYPE_t p_calc = p(rhow, U1)
+  if logger:
+    logger.log("info", {
+      "stage": "finalize",
+      "rhow": rhow,
+      "p": p_calc,
+      "T": T_calc
+    })
+  return TriplerhopT(rhow, p_calc, T_calc)
 
 ''' Vectorizing wrappers '''
 
