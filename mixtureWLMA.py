@@ -1,12 +1,24 @@
 ''' Tools for computing mixture properties of IAPWS95 water with a linearized
-magma equation of state p = p(rho) and air. Provides middleware for Cython
-implementation of underlying iterative scheme. Wraps in an object for object-
-oriented codes like Quail.
+magma equation of state p = p(rho), water and air. Provides an interface for
+Cython implementation of underlying iterative scheme. The class interface is
+useful for object-oriented codes like Quail.
+
+The middleware provided here adapts the data format, vector-level parallel
+splitting and joining, and caching for repeated calls with the same inputs.
+
+The data format matches that of Quail (np.array with shape [...,nstates]) where
+nstates is the number of states in the state vector.
+
+Vector-level parallel computation is done through multiprocessing.pool if a
+pool is passed (otherwise, the computation is done serially). The vector is
+chunked into approximately equal parts that are processed in parallel.
+
+Caching prevents redundant computation when the same set of vector inputs is
+passed consecutively.The inputs and outputs are cached in a circular buffer
+where data are replaced when inputs of the same size but with different values
+are provided, or when the maximum number of cached inputs/outputs is reached.
 '''
 
-from time import perf_counter
-import traceback
-import sys
 import numpy as np
 import multiprocessing as mp
 
