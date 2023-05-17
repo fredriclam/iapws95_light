@@ -33,7 +33,108 @@ pc = 22.064e6              # Pa
 
 class WLMA():
   ''' Mixture material parameters with mappings to pressure, temperature, and
-  sound speed. Special case of WLMA assuming ya = 0.0. '''
+  sound speed '''
+
+  class WLMACache():
+    def __init__(self, buffer_count=8, buffer_thresh=50):
+      ''' Cache for input->output association. A circular buffer is used. Arrays
+      of a size existing in the buffer, but with different values, replace the
+      existing array. Arrays that are too small (less than buffer_thresh tuples
+      of inputs) are ignored.
+      To retrieve, access the raw buffers as needed using index_in_cache if
+      index_in_cache is not None.
+
+      Inputs:
+        buffer_count: number of arrays to buffer
+        buffer_thresh: buffer only if poll size >= this
+      '''
+      self.buffer_count = buffer_count
+      self.buffer_thresh = buffer_thresh
+      self.buffer_index = 0
+      self.num_buffers_filled = 0
+      # Input buffers
+      self.buffer_rho_vec = [None] * self.buffer_count
+      self.buffer_momentum = [None] * self.buffer_count
+      self.buffer_vol_energy = [None] * self.buffer_count
+      # Output buffers
+      self.buffer_rhow = [None] * self.buffer_count
+      self.buffer_p = [None] * self.buffer_count
+      self.buffer_T = [None] * self.buffer_count
+      self.buffer_sound_speed = [None] * self.buffer_count
+      self.buffer_volfracW = [None] * self.buffer_count
+      # Diagnostic stats
+      self.cache_hits = 0
+      self.cache_misses = 0
+      self.cache_ignores = 0
+
+    def _is_cacheable(self, rho_vec:np.array, momentum:np.array,
+                    vol_energy:np.array) -> bool:
+      ''' Returns whether something is large enough to cache. '''
+      return vol_energy.size >= self.buffer_thresh
+    
+    def index_in_cache(self, rho_vec:np.array, momentum:np.array,
+                    vol_energy:np.array):
+      ''' Returns index in cache if in cache, else returns None. '''
+      # Filter out inputs that are too small
+      if not self._is_cacheable(rho_vec, momentum, vol_energy):
+        self.cache_ignores += 1
+        return None
+      # Find a match in the circular buffer
+      for i in range(self.num_buffers_filled):
+        if rho_vec.shape == self.buffer_rho_vec[i].shape \
+            and momentum.shape == self.buffer_momentum[i].shape \
+            and vol_energy.shape == self.buffer_vol_energy[i].shape:
+          if np.all(rho_vec == self.buffer_rho_vec[i]) \
+              and np.all(momentum == self.buffer_momentum[i]) \
+              and np.all(vol_energy == self.buffer_vol_energy[i]):
+            self.cache_hits += 1
+            return i
+      self.cache_misses += 1
+      return None
+
+    def write_to_buffer(self, rho_vec:np.array, momentum:np.array,
+                        vol_energy:np.array, rhow:np.array, p:np.array,
+                        T:np.array, sound_speed:np.array, volfracW:np.array):
+      ''' Add to buffer, replacing any entry with the same shape. '''
+      # Ignore values if data is too small
+      if not self._is_cacheable(rho_vec, momentum, vol_energy):
+        return
+      # Set default write location
+      write_index = self.buffer_index
+      create_new_entry = True
+      # Set write index to any existing shape
+      for i in range(self.num_buffers_filled):
+        if rho_vec.shape == self.buffer_rho_vec[i].shape \
+            and momentum.shape == self.buffer_momentum[i].shape \
+            and vol_energy.shape == self.buffer_vol_energy[i].shape:
+          write_index = i
+          create_new_entry = False
+          break
+      if create_new_entry:
+        # Track number of filled buffers
+        if self.num_buffers_filled < self.buffer_count:
+          self.num_buffers_filled += 1
+        # Move write pointer
+        self.buffer_index = (self.buffer_index + 1) % self.buffer_count
+      # Fill input buffers
+      self.buffer_rho_vec[write_index] = rho_vec
+      self.buffer_momentum[write_index] = momentum
+      self.buffer_vol_energy[write_index] = vol_energy
+      # Fill output buffers
+      self.buffer_rhow[write_index] = rhow
+      self.buffer_p[write_index] = p
+      self.buffer_T[write_index] = T
+      self.buffer_sound_speed[write_index] = sound_speed
+      self.buffer_volfracW[write_index] = volfracW
+
+    def get_buffer_bytes(self):
+      ''' Estimate bytes occupied by buffer. '''
+      nbytes_total = 0
+      for i in range(self.num_buffers_filled):
+        nbytes_total += self.buffer_rho_vec[i].nbytes \
+                      + self.buffer_momentum[i].nbytes \
+                      + self.buffer_vol_energy[i].nbytes * (1 + 4)
+      return nbytes_total
 
   def __init__(self, K=10e9, p_m0=5e6, rho_m0=2.6e3, c_v_m0=3e3,
       R_a=287, gamma_a=1.4):
@@ -47,16 +148,35 @@ class WLMA():
     self.R_a = R_a
     self.gamma_a = gamma_a
     self.pool = None
+
+    self.cache = WLMA.WLMACache()
   
   def __call__(self, rho_vec:np.array, momentum:np.array, vol_energy:np.array,
-               pool:mp.Pool=None):
+               pool:mp.Pool=None) -> tuple[np.array, np.array, np.array,
+                                           np.array, np.array]:
     ''' Convenience function that calls the backend for computing
     (p, T, vf, soundspeed). '''
 
-    # TODO: logging
+    # TODO: feature: logger passing (this would take a lot of memory because of
+    # the verbosity of the iterative solver logging)
     pass
 
-    return self.WLM_rhopT_native(rho_vec, momentum, vol_energy, pool)
+    # Check cache
+    i = self.cache.index_in_cache(rho_vec, momentum, vol_energy)
+    if i is not None:
+      # Read from cache
+      out = (self.cache.buffer_rhow[i],
+             self.cache.buffer_p[i],
+             self.cache.buffer_T[i],
+             self.cache.buffer_sound_speed[i],
+             self.cache.buffer_volfracW[i])
+    else:
+      # Call native conservative-to-primitive routine
+      out = self.WLM_rhopT_native(rho_vec, momentum, vol_energy, pool)
+      # Write to cache
+      self.cache.write_to_buffer(rho_vec, momentum, vol_energy, *out)
+
+    return out
 
   def WLM_rhopT_map(self, rho_vec:np.array,
                     momentum:np.array, vol_energy:np.array):
@@ -114,7 +234,15 @@ class WLMA():
   
   def WLM_rhopT_native(self, arho_vec:np.array,
                        momentum:np.array, vol_energy:np.array,
-                       pool:mp.Pool=None):
+                       pool:mp.Pool=None) -> tuple[np.array, np.array, np.array,
+                                                   np.array, np.array]:
+    ''' Computes WLMA equation of state primitives (rhow, p, T, c, volfracW).
+    Inputs:
+      arho_vec with shape (...,3)
+      momentum with shape (...,[1,2,...])
+      vol_energy with shape (...,1)
+      [pool, optional]; if truthy, is used as an mp.pool
+    '''
     if pool:
       # _t1=perf_counter()
       par_result = pool.starmap(self.WLM_rhopT_native_serial,
