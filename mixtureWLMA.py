@@ -4,8 +4,11 @@ implementation of underlying iterative scheme. Wraps in an object for object-
 oriented codes like Quail.
 '''
 
-
+from time import perf_counter
+import traceback
+import sys
 import numpy as np
+import multiprocessing as mp
 
 try:
   # Import locally Cython compiled modules
@@ -43,15 +46,17 @@ class WLMA():
     self.R = R
     self.R_a = R_a
     self.gamma_a = gamma_a
+    self.pool = None
   
-  def __call__(self, rho_vec:np.array, momentum:np.array, vol_energy:np.array):
+  def __call__(self, rho_vec:np.array, momentum:np.array, vol_energy:np.array,
+               pool:mp.Pool=None):
     ''' Convenience function that calls the backend for computing
     (p, T, vf, soundspeed). '''
 
     # TODO: logging
     pass
 
-    return self.WLM_rhopT_native(rho_vec, momentum, vol_energy)
+    return self.WLM_rhopT_native(rho_vec, momentum, vol_energy, pool)
 
   def WLM_rhopT_map(self, rho_vec:np.array,
                     momentum:np.array, vol_energy:np.array):
@@ -108,13 +113,33 @@ class WLMA():
     return rhow, p, T, sound_speed, volfracW
   
   def WLM_rhopT_native(self, arho_vec:np.array,
-                       momentum:np.array, vol_energy:np.array):
+                       momentum:np.array, vol_energy:np.array,
+                       pool:mp.Pool=None):
+    if pool:
+      # _t1=perf_counter()
+      par_result = pool.starmap(self.WLM_rhopT_native_serial,
+        zip(np.array_split(arho_vec, pool._processes, axis=0),
+          np.array_split(momentum, pool._processes, axis=0),
+          np.array_split(vol_energy, pool._processes, axis=0)))
+      _out_temp =  [np.concatenate(par_output, axis=0) for par_output in (zip(*par_result))]
+      # _t2=perf_counter()
+      # self.WLM_rhopT_native_serial(arho_vec, momentum, vol_energy)
+      # _t3=perf_counter()
+      # print(f"Wallratio:{(_t2-_t1)/(_t3-_t2):.3f}; load:{arho_vec.shape[0]}")
+      # print(traceback.print_stack(file=sys.stdout))
+      return _out_temp
+    else:
+      return self.WLM_rhopT_native_serial(arho_vec, momentum, vol_energy)
+
+  def WLM_rhopT_native_serial(self, arho_vec:np.array,
+                       momentum:np.array, vol_energy:np.array, logger=False):
     ''' Compute pressure and temperature from vector of conservative variables.
     Uses Cython native iteration.
     Inputs:
       arho_vec[...,:] == [arhoA=0.0, arhoW, arhoM]: partial densities
       momentum[...,:] == [rhou, (rhov)]: momentum components
       vol_energy[...,:] == [rhoe]: volumetric total energy
+      [logger,]: logger object with method log(self, level:str, data:dict)
     '''
     # Compute mixture composition
     rho_mix = arho_vec.sum(axis=-1, keepdims=True)
@@ -128,12 +153,23 @@ class WLMA():
     # Compute internal energy
     kinetic = 0.5 * (momentum * momentum).sum(axis=-1, keepdims=True) / rho_mix
     vol_energy_internal = vol_energy - kinetic
-    
+
+    # Critical monitor
+    # class FilterLog():
+    #   def __init__(self):
+    #     self.buffer = []
+    #     self.critical = False
+    #   def log(self, level:str, data:dict):
+    #     if level == "critical":
+    #       self.critical = True
+    #     self.buffer.append(data)
+    # flog = FilterLog()
+
     # Call Cython iterative solve for rhow, p, T
     _out = float_mix_functions.vec_conservative_to_pT_WLMA(
         vol_energy_internal, rho_mix, yw, ya,
         self.K, self.p_m0, self.rho_m0, self.c_v_m0,
-        self.R_a, self.gamma_a)
+        self.R_a, self.gamma_a, logger=logger)
     # Python-level data rearrangement
     rhow        = np.reshape(_out[0::4], yw.shape)
     p           = np.reshape(_out[1::4], yw.shape)
@@ -142,7 +178,8 @@ class WLMA():
     # Postprocess for volume fraction TODO: handle rhow == 0 case
     volfracW = arho_vec[...,1:2] / (1e-16 + rhow)
 
-    # TODO: propagate error
-    pass
+    # Propagate errors
+    # if flog.critical > 0:
+    #   print("Critical log")
 
     return rhow, p, T, sound_speed, volfracW

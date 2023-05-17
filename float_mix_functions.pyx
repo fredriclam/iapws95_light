@@ -1536,6 +1536,13 @@ cpdef OutIterate iterate_backtrack_box(DTYPE_t U0, DTYPE_t U1, WLMAParams params
         "step0": _a*step[0], "step1": _a*step[1],
         "fnorm": f_along_line, "freq": (1.0 - _a * armijo_c) * _fnorm,
         "region_type": _out_step.region_type})
+    if _a * _a * (step[0] * step[0] + step[1] * step[1]) < 1e-12:
+      if logger:
+        logger.log("warning", {"stage": "steptoosmall",
+          "squarestepsize": _a * _a * (step[0] * step[0] + step[1] * step[1]),})
+      # Early return with f = 0 sentinel value
+      return OutIterate(U_next[0], U_next[1], 0.0)
+
     # Armijo condition: improvement is at least a portion of a * |f|
     if f_along_line <= (1.0 - _a * armijo_c) * _fnorm:
       break
@@ -1639,9 +1646,12 @@ cdef DTYPE_t ref_rhow_hot0 = 123.48077675
 cdef DTYPE_t ref_ew_hot0 = u(ref_rhow_hot0, ref_T_hot0)
 cdef DTYPE_t ref_c_v_hot0 = c_v(ref_rhow_hot0, ref_T_hot0)
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
+@cython.boundscheck(True)
+@cython.wraparound(True)
+@cython.nonecheck(True)
+# @cython.boundscheck(False)
+# @cython.wraparound(False)
+# @cython.nonecheck(False)
 # @cython.cdivision(True)
 cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   DTYPE_t vol_energy, DTYPE_t rho_mix, DTYPE_t yw, DTYPE_t ya,
@@ -1802,6 +1812,8 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
       "T_init": _T_init,
       "is_low_confidence": _min_candidate > 0.5,
     })
+
+
 
   ''' Backtracking Newton iteration '''
   cdef DTYPE_t _fnorm, U0, U1
