@@ -48,6 +48,18 @@ cdef DTYPE_t[12] static_regression_weights = [
   -111.538568414603972, 68.024491357232435, -211.349261918711562,
   12.208660020549521, 60.443940920122770, 183.657082274465807,
   37.811498814731365, 72.941538305957451, -7.341630723542266,]
+# Parameter packing for WLMA model
+cdef struct WLMAParams:
+  DTYPE_t vol_energy
+  DTYPE_t rho_mix
+  DTYPE_t yw
+  DTYPE_t ya
+  DTYPE_t K
+  DTYPE_t p_m0
+  DTYPE_t rho_m0
+  DTYPE_t c_v_m0
+  DTYPE_t R_a
+  DTYPE_t gamma_a
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -78,7 +90,7 @@ cpdef DTYPE_t poly_T_residual_est(
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cpdef DTYPE_t linear_T_est(DTYPE_t yw, DTYPE_t vol_energy, DTYPE_t rho_mix,
-  DTYPE_t c_v_m0):
+    DTYPE_t c_v_m0):
   cdef DTYPE_t ym = 1.0 - yw
   cdef DTYPE_t T
   if rho_mix < 10.0:
@@ -96,7 +108,7 @@ cpdef DTYPE_t linear_T_est(DTYPE_t yw, DTYPE_t vol_energy, DTYPE_t rho_mix,
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cpdef DTYPE_t magma_mech_energy(DTYPE_t p, 
-  DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0):
+    DTYPE_t K, DTYPE_t p_m0, DTYPE_t rho_m0):
   ''' Mechanical component of internal energy as integral -p dv.
   First term is -(p-p0)dv, and second is -p0 dv, third is shift. '''
   # Nondimensional variable (for zero pressure)
@@ -107,6 +119,269 @@ cpdef DTYPE_t magma_mech_energy(DTYPE_t p,
   cdef DTYPE_t u = (p_m0 - p)/(p + K - p_m0)
   # Return energy shifted by energy at zero pressure
   return K / rho_m0 * (u - log(1.0 + u)) - p_m0 / rho_m0 * u - e_m0
+
+cpdef DTYPE_t mix_sound_speed(DTYPE_t rhow, DTYPE_t p, DTYPE_t T,
+    WLMAParams params):
+  ''' Isentropic sound speed.
+  Intermediate computations are done through partials of phasic volume in
+  Gibbs (p,T) coordinates. For Helmholtz variables (v, T), one can obtain
+    dv/dT = - (dv/dp) * (dp/dT)
+  from the cyclic relation, where dv/dp = 1/(dp/dv).
+  ''' # TODO: check python interactions in .html
+
+  cdef unsigned short i
+  # Compute intermediates
+  cdef DTYPE_t ym = 1.0 - (params.ya + params.yw)
+  cdef DTYPE_t rho_m = params.rho_m0 * (1.0 + (p - params.p_m0) / params.K)
+  cdef DTYPE_t d = rhow / rhoc
+  cdef DTYPE_t t = Tc / T
+
+  # Check for water phase equilibrium, with x = 0 default
+  cdef DTYPE_t x = 0.0
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef Derivatives_phir_0_1_2 _phirall0, _phirall1
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    # Check auxiliary equation for saturation curve
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rhow - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+  
+  # Compute partials for water phase(s)
+  cdef DTYPE_t dvdp_w0, dpdT_w0, dvdT_w0, c_v_w0
+  cdef DTYPE_t dvdp_w1, dpdT_w1, dvdT_w1, c_v_w1
+  if x <= 0.0 or x >= 1.0:
+    # Compute single-phase water partials(dv/dp)_T, (dv/dT)_p
+    _phirall0 = fused_phir_all(d, t)
+    dvdp_w0 = -1.0 / (rhow * rhow * R * T * (1.0
+      + 2.0 * d * _phirall0.phir_d + d * d * _phirall0.phir_dd))
+    dpdT_w0 = rhow * R * (
+      1.0 + d * _phirall0.phir_d - t * d * _phirall0.phir_dt)
+    dvdT_w0 = -dvdp_w0 * dpdT_w0
+    c_v_w0  = c_v(rhow, T)
+    # Second phase is weighted out with zero mass fraction
+    dvdp_w1 = 1.0 # In denominator
+    dpdT_w1 = 0.0
+    dvdT_w1 = 0.0
+    c_v_w1  = 0.0
+  else:
+    # Compute partials in both phases of water
+    _phirall0 = fused_phir_all(dsatl, t)
+    _phirall1 = fused_phir_all(dsatv, t)
+    # Liquid
+    dvdp_w0 = -1.0 / (sat_pair.first * sat_pair.first * R * T * (1.0
+      + 2.0 * dsatl * _phirall0.phir_d + dsatl * dsatl * _phirall0.phir_dd))
+    dpdT_w0 = sat_pair.first * R * (
+      1.0 + dsatl * _phirall0.phir_d - t * dsatl * _phirall0.phir_dt)
+    dvdT_w0 = - dvdp_w0 * dpdT_w0
+    c_v_w0  = c_v(sat_pair.first, T)
+    # Vapour
+    dvdp_w1 = -1.0 / (sat_pair.second * sat_pair.second * R * T * (1.0
+      + 2.0 * dsatv * _phirall1.phir_d + dsatv * dsatv * _phirall1.phir_dd))
+    dpdT_w1 = sat_pair.second * R * (
+      1.0 + dsatv * _phirall1.phir_d - t * dsatv * _phirall1.phir_dt)
+    dvdT_w1 = - dvdp_w1 * dpdT_w1
+    c_v_w1  = c_v(sat_pair.second, T)
+
+  # Assemble array of mass fractions
+  cdef DTYPE_t[4] arr_y = [params.ya, params.yw*(1.0-x), params.yw*x, ym]
+  # Assemble array of phasic (dv/dp)_T
+  cdef DTYPE_t[4] arr_vp = [
+    -params.R_a * T / (p * p),
+    dvdp_w0,
+    dvdp_w1,
+    -1.0 / (rho_m * rho_m) * params.rho_m0 / params.K,
+  ]
+  # Assemble array of phasic (dv/dT)_p
+  cdef DTYPE_t[4] arr_vT = [
+    params.R_a / p,
+    dvdT_w0,
+    dvdT_w1,
+    0.0,
+  ]
+  # Assemble array of phasic isochoric heat capacities
+  cdef DTYPE_t[4] arr_c_v = [
+    params.R_a / (params.gamma_a - 1.0),
+    c_v_w0,
+    c_v_w1,
+    params.c_v_m0,
+  ]
+
+  # Compute dot products of y and phasic derivatives
+  cdef DTYPE_t weighted_c_v = 0.0
+  cdef DTYPE_t weighted_vp = 0.0
+  cdef DTYPE_t weighted_vT = 0.0
+  cdef DTYPE_t weighted_vT2_vp = 0.0
+  for i in range(4):
+    weighted_c_v += arr_y[i] * arr_c_v[i]
+    weighted_vp += arr_y[i] * arr_vp[i]
+    weighted_vT += arr_y[i] * arr_vT[i]
+    weighted_vT2_vp += arr_y[i] * arr_vT[i] * arr_vT[i] / arr_vp[i]
+
+  # Compute mixture (dv/dp)_s
+  cdef DTYPE_t dv_dp_s = weighted_vp + \
+    T * weighted_vT * weighted_vT / (weighted_c_v - T * weighted_vT2_vp)
+  # Convert to sound speed (drho/dp)_s and return
+  if -1.0/(params.rho_mix * params.rho_mix * dv_dp_s) <= 0.0:
+    return 0.0
+  return sqrt(-1.0/(params.rho_mix * params.rho_mix * dv_dp_s))
+
+def cons_derivatives_pT(rhow, p, T, params:WLMAParams):
+  ''' (p,T)-derivatives of volume, energy weighted by mass fractions. '''
+
+  cdef unsigned short i
+  # Compute intermediates
+  cdef DTYPE_t ym = 1.0 - (params.ya + params.yw)
+  cdef DTYPE_t rho_m = params.rho_m0 * (1.0 + (p - params.p_m0) / params.K)
+  cdef DTYPE_t d = rhow / rhoc
+  cdef DTYPE_t t = Tc / T
+
+  # Check for water phase equilibrium, with x = 0 default
+  cdef DTYPE_t x = 0.0
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef Derivatives_phir_0_1_2 _phirall0, _phirall1
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    # Check auxiliary equation for saturation curve
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rhow - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+  
+  # Compute partials for water phase(s)
+  cdef DTYPE_t dvdp_w0, dpdT_w0, dvdT_w0, c_v_w0
+  cdef DTYPE_t dedp_w0, dedT_w0
+  cdef DTYPE_t _gibbs_dedrho, _gibbs_dedT, _gibbs_dpdrho   # coords (rho, T)
+  cdef DTYPE_t dvdp_w1, dpdT_w1, dvdT_w1, c_v_w1
+  cdef DTYPE_t dedp_w1, dedT_w1
+
+  if x <= 0.0 or x >= 1.0:
+    # Compute single-phase water partials(dv/dp)_T, (dv/dT)_p
+    _phirall0 = fused_phir_all(d, t)
+    dvdp_w0 = -1.0 / (rhow * rhow * R * T * (1.0
+      + 2.0 * d * _phirall0.phir_d + d * d * _phirall0.phir_dd))
+    dpdT_w0 = rhow * R * (
+      1.0 + d * _phirall0.phir_d - t * d * _phirall0.phir_dt)
+    # Isobaric derivative
+    dvdT_w0 = -dvdp_w0 * dpdT_w0
+    # Compute in gibbs coordinates
+    _gibbs_dedrho = R * T / rhoc * _phirall0.phir_dt
+    _gibbs_dedT   = c_v(rhow, T)
+    _gibbs_dpdrho = -1.0 / (rhow * rhow * dvdp_w0)
+    dedp_w0 = _gibbs_dedrho / _gibbs_dpdrho
+    dedT_w0 = _gibbs_dedT - dedp_w0 * dpdT_w0
+    # Second phase is weighted out with zero mass fraction
+    dvdp_w1 = 1.0 # In denominator
+    dpdT_w1 = 0.0
+    dvdT_w1 = 0.0
+    dedp_w1 = 0.0
+    dedT_w1 = 0.0
+  else:
+    # Compute partials in both phases of water
+    _phirall0 = fused_phir_all(dsatl, t)
+    _phirall1 = fused_phir_all(dsatv, t)
+    # Liquid
+    dvdp_w0 = -1.0 / (sat_pair.first * sat_pair.first * R * T * (1.0
+      + 2.0 * dsatl * _phirall0.phir_d + dsatl * dsatl * _phirall0.phir_dd))
+    dpdT_w0 = sat_pair.first * R * (
+      1.0 + dsatl * _phirall0.phir_d - t * dsatl * _phirall0.phir_dt)
+    dvdT_w0 = - dvdp_w0 * dpdT_w0
+    # Compute in gibbs coordinates
+    _gibbs_dedrho = R * T / rhoc * _phirall0.phir_dt
+    _gibbs_dedT   = c_v(sat_pair.first, T)
+    _gibbs_dpdrho = -1.0 / (sat_pair.first * sat_pair.first * dvdp_w0)
+    dedp_w0 = _gibbs_dedrho / _gibbs_dpdrho
+    dedT_w0 = _gibbs_dedT - dedp_w0 * dpdT_w0
+
+    # Vapour
+    dvdp_w1 = -1.0 / (sat_pair.second * sat_pair.second * R * T * (1.0
+      + 2.0 * dsatv * _phirall1.phir_d + dsatv * dsatv * _phirall1.phir_dd))
+    dpdT_w1 = sat_pair.second * R * (
+      1.0 + dsatv * _phirall1.phir_d - t * dsatv * _phirall1.phir_dt)
+    dvdT_w1 = - dvdp_w1 * dpdT_w1
+    # Compute in gibbs coordinates
+    _gibbs_dedrho = R * T / rhoc * _phirall1.phir_dt
+    _gibbs_dedT   = c_v(sat_pair.second, T)
+    _gibbs_dpdrho = -1.0 / (sat_pair.second * sat_pair.second * dvdp_w1)
+    dedp_w1 = _gibbs_dedrho / _gibbs_dpdrho
+    dedT_w1 = _gibbs_dedT - dedp_w1 * dpdT_w1
+
+  # Assemble array of mass fractions
+  cdef DTYPE_t[4] arr_y = [params.ya, params.yw*(1.0-x), params.yw*x, ym]
+  # Assemble array of phasic (dv/dT)_p
+  cdef DTYPE_t[4] arr_vT = [
+    params.R_a / p,
+    dvdT_w0,
+    dvdT_w1,
+    0.0,
+  ]
+  # Assemble array of phasic (dv/dp)_T
+  cdef DTYPE_t[4] arr_vp = [
+    -params.R_a * T / (p * p),
+    dvdp_w0,
+    dvdp_w1,
+    -1.0 / (rho_m * rho_m) * params.rho_m0 / params.K,
+  ]
+  # Assemble array of phasic (de/dT)_p
+  cdef DTYPE_t[4] arr_eT = [
+    params.R_a / (params.gamma_a - 1.0),
+    dedT_w0,
+    dedT_w1,
+    params.c_v_m0,
+  ]
+  # Assemble array of phasic (de/dp)_T
+  cdef DTYPE_t[4] arr_ep = [
+    0.0,
+    dedp_w0,
+    dedp_w1,
+    p / params.K * params.rho_m0 / (rho_m * rho_m),
+  ]
+
+  # Compute dot products of y and phasic derivatives
+  cdef DTYPE_t weighted_vT = 0.0
+  cdef DTYPE_t weighted_vp = 0.0
+  cdef DTYPE_t weighted_eT = 0.0
+  cdef DTYPE_t weighted_ep = 0.0
+  for i in range(4):
+    weighted_vT += arr_y[i] * arr_vT[i]
+    weighted_vp += arr_y[i] * arr_vp[i]
+    weighted_eT += arr_y[i] * arr_eT[i]
+    weighted_ep += arr_y[i] * arr_ep[i]
+
+  return weighted_vT, weighted_vp, weighted_eT, weighted_ep
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -1242,17 +1517,17 @@ cdef struct OutKernel2:
   DTYPE_t step1
   DTYPE_t pmix
   int region_type
-cdef struct WLMAParams:
-  DTYPE_t vol_energy
-  DTYPE_t rho_mix
-  DTYPE_t yw
-  DTYPE_t ya
-  DTYPE_t K
-  DTYPE_t p_m0
-  DTYPE_t rho_m0
-  DTYPE_t c_v_m0
-  DTYPE_t R_a
-  DTYPE_t gamma_a
+# cdef struct WLMAParams:
+#   DTYPE_t vol_energy
+#   DTYPE_t rho_mix
+#   DTYPE_t yw
+#   DTYPE_t ya
+#   DTYPE_t K
+#   DTYPE_t p_m0
+#   DTYPE_t rho_m0
+#   DTYPE_t c_v_m0
+#   DTYPE_t R_a
+#   DTYPE_t gamma_a
 # Enumerate flag types
 cdef int _FLAG_L = 0
 cdef int _FLAG_LV = 1
@@ -1279,7 +1554,7 @@ cdef OutKernel2 kernel2_WLMA(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
   # Zealous unpacking
   cdef DTYPE_t vol_energy, rho_mix, yw, ya, K, \
     p_m0, rho_m0, c_v_m0, R_a, gamma_a
-  vol_energy, rho_mix, yw, ya,  K, p_m0, rho_m0, c_v_m0, R_a, gamma_a = \
+  vol_energy, rho_mix, yw, ya, K, p_m0, rho_m0, c_v_m0, R_a, gamma_a = \
     params.vol_energy, params.rho_mix, params.yw, params.ya, params.K, \
     params.p_m0, params.rho_m0, params.c_v_m0, params.R_a, params.gamma_a
 
@@ -1880,7 +2155,10 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
   if data.size != 4*N:
     raise ValueError("Size of vector inputs are either not the same.")
 
+  cdef WLMAParams params
   for i in range(N):
+    params = WLMAParams(data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
+      K, p_m0, rho_m0, c_v_m0, R_a, gamma_a)
     # Use packed inputs (vol_energy, rho_mix, yw, ya)
     out_triple = conservative_to_pT_WLMA_bn(
       data[4*i], data[4*i+1], data[4*i+2], data[4*i+3],
@@ -1891,8 +2169,8 @@ def vec_conservative_to_pT_WLMA(np.ndarray vol_energy, np.ndarray rho_mix,
     data[4*i+2] = out_triple.T
     # TODO: replace with direct postprocess with access to last phir_*
     # TODO: replace sound speed computation for mixture
-    data[4*i+3] = sound_speed(out_triple.rhow, out_triple.T)
-  # return rhow, pmix, T
+    data[4*i+3] = mix_sound_speed(out_triple.rhow, out_triple.p, out_triple.T,
+      params)
   return data # [...,:] = [rhow, pmix, T, 0.0]
 
 ''' Legacy/test functions '''
