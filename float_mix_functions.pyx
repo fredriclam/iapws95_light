@@ -2172,6 +2172,20 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
       "p": p_calc,
       "T": T_calc
     })
+  
+  ''' Triple point check '''
+  if T_calc < 273.16:
+    T_calc = 273.16
+    # Clip pressure
+    p_calc = p(rhow, T_calc)
+    if logger:
+      logger.log("critical", {
+      "message": "T below bounds",
+      "rhow": rhow,
+      "p_clipped": p_calc,
+      "T_unclipped": U1,
+      "T_clipped": T_calc,
+    })
   return TriplerhopT(rhow, p_calc, T_calc)
 
 ''' Vectorizing wrappers '''
