@@ -166,8 +166,8 @@ class WLMA():
   def __call__(self, arho_vec:np.array, momentum:np.array, vol_energy:np.array,
                pool:mp.Pool=None) -> Tuple[np.array, np.array, np.array,
                                            np.array, np.array]:
-    ''' Convenience function that calls the backend for computing
-    (p, T, vf, soundspeed). '''
+    ''' Entry point for computing (rhow, p, T) for the WLMA model. Calls the
+    appropriate backend and returns (rhow, p, T, vf, soundspeed). '''
 
     # TODO: feature: logger passing (this would take a lot of memory because of
     # the verbosity of the iterative solver logging)

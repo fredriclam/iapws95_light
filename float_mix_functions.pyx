@@ -129,12 +129,19 @@ cpdef DTYPE_t mix_sound_speed(DTYPE_t rhow, DTYPE_t p, DTYPE_t T,
   from the cyclic relation, where dv/dp = 1/(dp/dv).
   ''' # TODO: check python interactions in .html
 
+  # TODO: HACK: this is an approximation (weigh out water since inaccuracy in
+  # rhow can yield exponentially incorrect c_w)
+  if params.yw <= 1e-6:
+    params.yw = 0.0
+
   cdef unsigned short i
   # Compute intermediates
   cdef DTYPE_t ym = 1.0 - (params.ya + params.yw)
   cdef DTYPE_t rho_m = params.rho_m0 * (1.0 + (p - params.p_m0) / params.K)
   cdef DTYPE_t d = rhow / rhoc
-  cdef DTYPE_t t = Tc / T
+  # TODO: document triple point clipping
+  # Set reciprocal reduced temperature for water
+  cdef DTYPE_t t = Tc / max(T, 273.16)
 
   # Check for water phase equilibrium, with x = 0 default
   cdef DTYPE_t x = 0.0
@@ -156,7 +163,7 @@ cpdef DTYPE_t mix_sound_speed(DTYPE_t rhow, DTYPE_t p, DTYPE_t T,
     # Check if in or near phase equilibrium region
     if d < dsatl + sat_atol and d > dsatv - sat_atol:
       # Compute precise saturation curve and saturation pressure
-      sat_pair = rho_sat(T)
+      sat_pair = rho_sat(Tc / t)
       dsatl = sat_pair.first / rhoc
       dsatv = sat_pair.second / rhoc
       if d <= dsatl and d >= dsatv:
@@ -170,12 +177,12 @@ cpdef DTYPE_t mix_sound_speed(DTYPE_t rhow, DTYPE_t p, DTYPE_t T,
   if x <= 0.0 or x >= 1.0:
     # Compute single-phase water partials(dv/dp)_T, (dv/dT)_p
     _phirall0 = fused_phir_all(d, t)
-    dvdp_w0 = -1.0 / (rhow * rhow * R * T * (1.0
+    dvdp_w0 = -1.0 / (rhow * rhow * R * Tc / t * (1.0
       + 2.0 * d * _phirall0.phir_d + d * d * _phirall0.phir_dd))
     dpdT_w0 = rhow * R * (
       1.0 + d * _phirall0.phir_d - t * d * _phirall0.phir_dt)
     dvdT_w0 = -dvdp_w0 * dpdT_w0
-    c_v_w0  = c_v(rhow, T)
+    c_v_w0  = c_v(rhow, Tc / t)
     # Second phase is weighted out with zero mass fraction
     dvdp_w1 = 1.0 # In denominator
     dpdT_w1 = 0.0
@@ -186,19 +193,19 @@ cpdef DTYPE_t mix_sound_speed(DTYPE_t rhow, DTYPE_t p, DTYPE_t T,
     _phirall0 = fused_phir_all(dsatl, t)
     _phirall1 = fused_phir_all(dsatv, t)
     # Liquid
-    dvdp_w0 = -1.0 / (sat_pair.first * sat_pair.first * R * T * (1.0
+    dvdp_w0 = -1.0 / (sat_pair.first * sat_pair.first * R * Tc / t * (1.0
       + 2.0 * dsatl * _phirall0.phir_d + dsatl * dsatl * _phirall0.phir_dd))
     dpdT_w0 = sat_pair.first * R * (
       1.0 + dsatl * _phirall0.phir_d - t * dsatl * _phirall0.phir_dt)
     dvdT_w0 = - dvdp_w0 * dpdT_w0
-    c_v_w0  = c_v(sat_pair.first, T)
+    c_v_w0  = c_v(sat_pair.first, Tc / t)
     # Vapour
-    dvdp_w1 = -1.0 / (sat_pair.second * sat_pair.second * R * T * (1.0
+    dvdp_w1 = -1.0 / (sat_pair.second * sat_pair.second * R * Tc / t * (1.0
       + 2.0 * dsatv * _phirall1.phir_d + dsatv * dsatv * _phirall1.phir_dd))
     dpdT_w1 = sat_pair.second * R * (
       1.0 + dsatv * _phirall1.phir_d - t * dsatv * _phirall1.phir_dt)
     dvdT_w1 = - dvdp_w1 * dpdT_w1
-    c_v_w1  = c_v(sat_pair.second, T)
+    c_v_w1  = c_v(sat_pair.second, Tc / t)
 
   # Assemble array of mass fractions
   cdef DTYPE_t[4] arr_y = [params.ya, params.yw*(1.0-x), params.yw*x, ym]
@@ -1968,6 +1975,51 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   # Remove excess from air (best precision order of operations)
   ya = 1.0 - (yw + ym) if yw + ym + ya > 1.0 else ya
 
+  ''' Low-water case '''
+  cdef DTYPE_t ya_replaced, T_approx, p_as_ideal, rhoa, R_gas_eff, R_w_max, e_w
+  cdef DTYPE_t[7] R_vec = [0.125*R_a, 0.25*R_a, 0.5*R_a,
+    R_a, 2*R_a, 4*R_a, 8*R_a]
+  cdef unsigned int i
+  if yw <= 1e-6:
+    # Water -> air replacement
+    ya_replaced = 1.0 - ym
+    # Approximate temperature without water, magma mech energy
+    T_approx = (vol_energy / rho_mix) / (
+      ya_replaced * R_a / (gamma_a - 1.0) + ym * c_v_m0)
+    params.ya = ya_replaced
+    params.yw = 0.0
+    # Compute LM+A equilibrium pressure and air-density
+    p_as_ideal = p_LMA(T_approx, ya_replaced, params)
+    rhoa = p_as_ideal / (R_a * T_approx)
+    # One-step correction for water, using air density as water density
+    #   (avoid using vol frac formulation, which can explode pw)
+    e_w = u(rhoa, max(T_approx, 273.16))
+    T_approx = (vol_energy / rho_mix - yw * e_w
+                - ym * magma_mech_energy(p_as_ideal, K, p_m0, rho_m0))\
+                / (ya * R_a / (gamma_a - 1.0) + ym * c_v_m0)
+    # Compute effective gas constant using air + water mixture
+    # experimental: modified gas stiffness (only good for ya >> yw)
+    # _R_w = float_mix_functions.p(_rhoa, _T_approx) / (_rhoa * _T_approx)
+    params.R_a = (ya * R_a + yw * R) / (ya + yw)
+    p_as_ideal = p_LMA(T_approx, ya_replaced, params)
+
+    # # Mixture gas constant correction
+    # for i in range(7):
+    #   params.R_a = R_vec[i]
+    #   # Compute volume criterion
+    #   kernel2_WLMA()
+    #   kernel2_WLMA(alpha_w, T, params).f1
+
+    # TODO: replace returned bogus rhow value
+    if logger:
+      logger.log("info", {
+        "stage": "dryapprox",
+        "yw": yw,
+        "T_approx": T_approx,
+        "p_approx": p_as_ideal,
+      })
+    return TriplerhopT(rhoa, p_LMA(T_approx, ya_replaced, params), T_approx)
+
   ''' Compute initial guesses for (alphaw, T) heuristically '''
   # Estimate energy using reference liquid water heat capacity and neglecting
   #   LM strain
@@ -2018,7 +2070,6 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   cdef DTYPE_t _a = 1e-7
   cdef DTYPE_t _b = 1.0
   cdef DTYPE_t _m, _alphaw_initVF
-  cdef unsigned int i
   cdef OutKernel2 kernel_out
   for i in range(NUM_ITER_BISECTION_INIT):
     _m = 0.5 * (_a + _b)
