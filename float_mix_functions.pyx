@@ -21,8 +21,12 @@ cdef extern from "math.h":
   double exp(double x)
   double log(double x)
   double fabs(double x)
-  double min(double x, double y)
-  double max(double x, double y)
+
+cdef DTYPE_t min(DTYPE_t x, DTYPE_t y):
+  return x if x <= y else y
+
+cdef DTYPE_t max(DTYPE_t x, DTYPE_t y):
+  return x if x >= y else y
 
 ''' Estimate initial temperature '''
 # Set liquid linearization point
@@ -1541,6 +1545,11 @@ cdef int _FLAG_LV = 1
 cdef int _FLAG_V = 2
 cdef int _FLAG_C = 3
 
+def poll_kernel(DTYPE_t alpha_w, DTYPE_t T, WLMAParams params):
+  ''' Python access wrapper for kernel -> (f0, f1, p) '''
+  cdef OutKernel2 _out = kernel2_WLMA(alpha_w, T, params)
+  return (_out._f0, _out._f1, _out.pmix)
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
@@ -1765,7 +1774,7 @@ cpdef OutIterate iterate_backtrack_box(DTYPE_t U0, DTYPE_t U1, WLMAParams params
   ''' Scaling for box constraints '''
   # Define box bounds
   cdef DTYPE_t[2] U_min = [1e-9, 273.16]
-  cdef DTYPE_t[2] U_max = [1.0, 2273.15]
+  cdef DTYPE_t[2] U_max = [1.0-1e-9, 2273.15]
   # Scale step to box bounds
   cdef DTYPE_t step_size_factor = 1.0
   cdef unsigned short i
@@ -1818,7 +1827,7 @@ cpdef OutIterate iterate_backtrack_box(DTYPE_t U0, DTYPE_t U1, WLMAParams params
         "step0": _a*step[0], "step1": _a*step[1],
         "fnorm": f_along_line, "freq": (1.0 - _a * armijo_c) * _fnorm,
         "region_type": _out_step.region_type})
-    if _a * _a * (step[0] * step[0] + step[1] * step[1]) < 1e-12:
+    if _a * _a * (step[0] * step[0] + step[1] * step[1]) < 1e-26:
       if logger:
         logger.log("warning", {"stage": "steptoosmall",
           "squarestepsize": _a * _a * (step[0] * step[0] + step[1] * step[1]),})
@@ -1972,53 +1981,20 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   # Clip yw, ym to minimum values
   yw = max(min_y, yw)
   ym = max(min_y, ym)
-  # Remove excess from air (best precision order of operations)
-  ya = 1.0 - (yw + ym) if yw + ym + ya > 1.0 else ya
+  ya = max(min_y, 1.0 - (yw + ym))
+
+  # Remove excess by scaling
+  cdef DTYPE_t y_sum = yw + ym + ya
+  if y_sum > 1.0:
+    yw /= y_sum
+    ym /= y_sum
+    ya /= y_sum
 
   ''' Low-water case '''
   cdef DTYPE_t ya_replaced, T_approx, p_as_ideal, rhoa, R_gas_eff, R_w_max, e_w
   cdef DTYPE_t[7] R_vec = [0.125*R_a, 0.25*R_a, 0.5*R_a,
     R_a, 2*R_a, 4*R_a, 8*R_a]
   cdef unsigned int i
-  if yw <= 1e-6:
-    # Water -> air replacement
-    ya_replaced = 1.0 - ym
-    # Approximate temperature without water, magma mech energy
-    T_approx = (vol_energy / rho_mix) / (
-      ya_replaced * R_a / (gamma_a - 1.0) + ym * c_v_m0)
-    params.ya = ya_replaced
-    params.yw = 0.0
-    # Compute LM+A equilibrium pressure and air-density
-    p_as_ideal = p_LMA(T_approx, ya_replaced, params)
-    rhoa = p_as_ideal / (R_a * T_approx)
-    # One-step correction for water, using air density as water density
-    #   (avoid using vol frac formulation, which can explode pw)
-    e_w = u(rhoa, max(T_approx, 273.16))
-    T_approx = (vol_energy / rho_mix - yw * e_w
-                - ym * magma_mech_energy(p_as_ideal, K, p_m0, rho_m0))\
-                / (ya * R_a / (gamma_a - 1.0) + ym * c_v_m0)
-    # Compute effective gas constant using air + water mixture
-    # experimental: modified gas stiffness (only good for ya >> yw)
-    # _R_w = float_mix_functions.p(_rhoa, _T_approx) / (_rhoa * _T_approx)
-    params.R_a = (ya * R_a + yw * R) / (ya + yw)
-    p_as_ideal = p_LMA(T_approx, ya_replaced, params)
-
-    # # Mixture gas constant correction
-    # for i in range(7):
-    #   params.R_a = R_vec[i]
-    #   # Compute volume criterion
-    #   kernel2_WLMA()
-    #   kernel2_WLMA(alpha_w, T, params).f1
-
-    # TODO: replace returned bogus rhow value
-    if logger:
-      logger.log("info", {
-        "stage": "dryapprox",
-        "yw": yw,
-        "T_approx": T_approx,
-        "p_approx": p_as_ideal,
-      })
-    return TriplerhopT(rhoa, p_LMA(T_approx, ya_replaced, params), T_approx)
 
   ''' Compute initial guesses for (alphaw, T) heuristically '''
   # Estimate energy using reference liquid water heat capacity and neglecting
@@ -2106,15 +2082,17 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
   # Select volfrac based on midpoint water density
   _alphaw_initrhow = yw * rho_mix / (0.5 * (_a + _b))
   # Assemble and select from candidates for water volume fraction initial guess
-  cdef DTYPE_t[8] _alpha_w_candidates = [
+  cdef DTYPE_t[12] _alpha_w_candidates = [
       _alphaw_initLV, # 1.0 - _alphaw_initLV,
       1e-5, 0.01, 0.5, 0.99, 1.0 - 1e-5,
-      _alphaw_initVF, _alphaw_initrhow]
+      _alphaw_initVF, _alphaw_initrhow,
+      1e-9, 1e-8, 1e-7, 1e-6, # New guesses for low volume fraction regime
+  ]
   # Select best candidate
-  cdef DTYPE_t[8] _candidate_performance
+  cdef DTYPE_t[12] _candidate_performance
   cdef unsigned int _argmin_candidate = 0
   cdef DTYPE_t _min_candidate = 1e32
-  for i in range(8):
+  for i in range(12):
     kernel_out = kernel2_WLMA(_alpha_w_candidates[i], _T_init, params)
     # Compute squared norm of residuals as performance metric
     _candidate_performance[i] = kernel_out.f0 * kernel_out.f0 \
@@ -2139,7 +2117,25 @@ cpdef TriplerhopT conservative_to_pT_WLMA_bn(
       "is_low_confidence": _min_candidate > 0.5,
     })
 
+  ''' If small enough volume fraction, ignore water '''
+  cdef DTYPE_t T_dry
+  cdef DTYPE_t p_dry
+  cdef DTYPE_t rhow_dry
 
+  if _alphaw_init < 1e-4:
+    T_dry = _T_init
+    p_dry = p_LMA(T_dry, ya, params)
+    rhow_dry = 998 # TODO:
+    if logger:
+      logger.log("info", {
+        "stage": "low-w",
+        "alphaw": _alphaw_init,
+        "p_dry": p_dry,
+        "T_dry": T_dry,
+        "rhow_dry": rhow_dry,
+      })
+    return TriplerhopT(rhow_dry, p_dry, T_dry)
+    
 
   ''' Backtracking Newton iteration '''
   cdef DTYPE_t _fnorm, U0, U1

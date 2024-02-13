@@ -21,6 +21,7 @@ are provided, or when the maximum number of cached inputs/outputs is reached.
 
 import numpy as np
 import multiprocessing as mp
+import datetime
 from typing import Tuple
 
 try:
@@ -43,6 +44,19 @@ rhol_triple = 999.793      # kg/m^3
 rhov_triple = 0.004_854_58 # kg/m^3
 ptriple = 611.654_771      # Pa (2018 revised release)
 pc = 22.064e6              # Pa
+
+class SimpleLogger():
+  ''' Simple bundled logger that stores logs as a list of lists. '''
+  def __init__(self):
+    self.curr_log = []
+    self.all_logs = [self.curr_log]
+  def log(self, level, data):
+    self.curr_log.append((level, data))
+  def create_new_log(self):
+    self.curr_log = []
+    self.all_logs.append(self.curr_log)
+  def pop_log(self):
+    return self.all_logs.pop()
 
 class WLMA():
   ''' Mixture material parameters with mappings to pressure, temperature, and
@@ -162,16 +176,20 @@ class WLMA():
     self.gamma_a = gamma_a
     self.cache = WLMA.WLMACache()
     self.timings = {} # TODO: size -> (hits, totaltime)
+
+    # Supervisor (index, [inputs]) -> (residual errors) pairs
+    self.has_supervisor = True
+    self.supervisor_buffer = np.empty((0,8))
+    self.supervisor_index = 0
+    _stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    self.supervisor_filename_prefix = f"slogs_{_stamp}_"
+    self.supervisor_maxbytes = 2**28 # (~256 MiB tables)
   
   def __call__(self, arho_vec:np.array, momentum:np.array, vol_energy:np.array,
                pool:mp.Pool=None) -> Tuple[np.array, np.array, np.array,
                                            np.array, np.array]:
     ''' Entry point for computing (rhow, p, T) for the WLMA model. Calls the
     appropriate backend and returns (rhow, p, T, vf, soundspeed). '''
-
-    # TODO: feature: logger passing (this would take a lot of memory because of
-    # the verbosity of the iterative solver logging)
-    pass
 
     # Check cache
     i = self.cache.index_in_cache(arho_vec, momentum, vol_energy)
@@ -188,7 +206,73 @@ class WLMA():
       # Write to cache
       self.cache.write_to_buffer(arho_vec, momentum, vol_energy, *out)
 
+    # TODO: feature: logger passing (this would take a lot of memory because of
+    # the verbosity of the iterative solver logging)
+    self.has_supervisor = False
+    if self.has_supervisor:
+      self.supervisor_pack_entry((arho_vec, momentum, vol_energy), out)
+
     return out
+  
+  def supervisor_pack_entry(self, input, output):
+    ''' Supervisor encoding format.
+    arg input is the tuple (arho_vec, momentum, vol_energy)
+    arg output is the tuple (rho, p, T, c, alpha). '''
+    arho_vec, momentum, vol_energy = input
+    rhow, p, T, c, alphaw = output
+    
+    def _scalar_objfn(alpha_w, T, vol_energy_internal, rho_mix, yw, ya):
+      params = {
+        "vol_energy": vol_energy_internal,
+        "rho_mix": rho_mix,
+        "yw": yw,
+        "ya": ya,
+        "K": self.K,
+        "p_m0": self.p_m0,
+        "rho_m0": self.rho_m0,
+        "c_v_m0": self.c_v_m0,
+        "R_a": self.R_a,
+        "gamma_a": self.gamma_a,
+      }
+      # As f0, f1, p_mix
+      return float_mix_functions.poll_kernel(alpha_w, T, params)[0:2]
+    
+    # Vector arithmetic
+    vol_energy_internal = vol_energy \
+          - 0.5 * (momentum * momentum).sum(axis=-1, keepdims=True) / rho_mix,
+    rho_mix = arho_vec.sum(axis=-1, keepdims=True)
+    ya = arho_vec[...,0:1] / rho_mix
+    yw = arho_vec[...,1:2] / rho_mix
+    
+    f0 = np.zeros_like(p)
+    f1 = np.zeros_like(p)
+
+    # Map available variables to gradients of (v, e) wr.t. (T, p)
+    f0.ravel()[:], f1.ravel()[:] = \
+      np.array(list(zip(*map(
+        lambda alpha_w, T, vol_energy_internal, rho_mix, yw, ya:
+          _scalar_objfn(alpha_w, T, vol_energy_internal, rho_mix, yw, ya),
+        alphaw.ravel(), T.ravel(), vol_energy_internal.ravel(),
+        rho_mix.ravel(), yw.ravel(), ya.ravel()))))
+
+    # Assemble data table
+    _table = np.stack((arho_vec[...,0].ravel(),
+              arho_vec[...,1].ravel(),
+              arho_vec[...,2].ravel(),
+              np.sqrt(momentum*momentum).sum(axis=-1).ravel(),
+              vol_energy.ravel(),
+              f0.ravel(),
+              f1.ravel(),
+              p.ravel()
+              ), axis=1)
+    self.supervisor_buffer = np.append(self.supervisor_buffer, _table, axis=0)
+    if self.supervisor_buffer.nbytes > self.supervisor_maxbytes:
+      # Flush buffer to disk
+      _outfile_name = self.supervisor_filename_prefix + f"{self.supervisor_index}"
+      np.save(_outfile_name, self.supervisor_buffer)
+      # Remake supervisor buffer
+      self.supervisor_buffer = np.empty((0, self.supervisor_table.shape[1]))
+      self.supervisor_index += 1
 
   def pressure_sgradient(self, vol_energy, rho_mix, yw, ya, rhow, p, T, u, v):
     ''' Compute gradient of pressure with respect to conservative variables. '''
@@ -344,18 +428,92 @@ class WLMA():
     ''' Compute pressure and temperature from vector of conservative variables.
     Uses Cython native iteration.
     Inputs:
-      arho_vec[...,:] == [arhoA=0.0, arhoW, arhoM]: partial densities
+      arho_vec[...,:] == [arhoA, arhoW, arhoM]: partial densities
       momentum[...,:] == [rhou, (rhov)]: momentum components
       vol_energy[...,:] == [rhoe]: volumetric total energy
       [logger,]: logger object with method log(self, level:str, data:dict)
     '''
     # Compute mixture composition
+    arho_vec = arho_vec.copy()
     rho_mix = arho_vec.sum(axis=-1, keepdims=True)
+    
+    ''' Pseudo-solubility approximation
+    Due to the convex shape of the curve of mixture sound speed as a function of
+    air mass fraction, numerical perturbation to the solution on the order of
+    the squared (acoustic) impedance constrast can lead to a large change in the
+    sound speed. This may cause numerical instability. Here we choose to
+    essentially omit the air phase when below the equilibrium solubility of air
+    in water. '''
+
+    # Zero-water shortcircuit
+    if np.all(arho_vec[...,1:2] == 0):
+      # Preprocess energy, mass fraction
+      kinetic = 0.5 * (momentum * momentum).sum(axis=-1, keepdims=True) / rho_mix
+      vol_energy_internal = vol_energy - kinetic
+      ya = arho_vec[...,0:1] / rho_mix
+
+      def scalar_p_LMA(vol_energy_internal, rho_mix, ya):
+        ''' Scalar (vars...) -> p'''
+        ym = 1.0 - ya
+        # Magma mech energy neglected
+        T = (vol_energy_internal / rho_mix
+           - float_mix_functions.magma_mech_energy(
+               self.p_m0, self.K, self.p_m0, self.rho_m0)) / (
+            ya * self.R_a / (self.gamma_a - 1.0)
+            + ym * self.c_v_m0)
+        params = {
+          "vol_energy": vol_energy_internal,
+          "rho_mix": rho_mix,
+          "yw": 0.0,
+          "ya": ya,
+          "K": self.K,
+          "p_m0": self.p_m0,
+          "rho_m0": self.rho_m0,
+          "c_v_m0": self.c_v_m0,
+          "R_a": self.R_a,
+          "gamma_a": self.gamma_a,
+        }
+        p = float_mix_functions.p_LMA(T, ya, params)
+        # Correct for mech energy
+        T = (vol_energy_internal / rho_mix
+           - float_mix_functions.magma_mech_energy(
+               p, self.K, self.p_m0, self.rho_m0)) / (
+            ya * self.R_a / (self.gamma_a - 1.0)
+            + ym * self.c_v_m0)
+        
+        return float_mix_functions.p_LMA(T, ya, params), T
+    
+      # Map
+      rhow = 1e3 * np.ones_like(vol_energy_internal)
+      p = np.zeros_like(vol_energy_internal)
+      T = np.zeros_like(vol_energy_internal)
+      sound_speed = np.sqrt(self.K / self.rho_m0) \
+        * np.ones_like(vol_energy_internal)
+      volfracW = np.zeros_like(vol_energy_internal)
+      p.ravel()[:], T.ravel()[:] = \
+        np.array(list(zip(*map(
+          lambda vol_energy_internal, rho_mix, ya:
+            scalar_p_LMA(vol_energy_internal, rho_mix, ya),
+          vol_energy_internal.ravel(), rho_mix.ravel(), ya.ravel()))))
+
+      return rhow, p, T, sound_speed, volfracW
+
+    # Compute target mass fraction
     y = arho_vec / rho_mix
-    # Replace yW > 1 - 1e-9 with yW = 1 - 1e-9
-    y[...,1:2] = np.clip(y[...,1:2], 0.0, 1-1e-9)
+    # Clip water fraction to leave 1 ppm of air, magma
+    # TODO: sync with POS_TOL in PPL
+    # TODO: transfer mass fractions can lead to >1060kg/m^3 water phasic, beware
+    y[...,1:2] = np.clip(y[...,1:2], 1e-6, 1-2e-6)
+    # Clip air mass fraction
+    y[...,0:1] = np.clip(y[...,0:1], 1e-6, None)
     # Readjust other mass fractions to add up to one
     y /= y.sum(axis=-1, keepdims=True)
+
+    # Reconstruct mixture density # TODO: CHECK:
+    arho_vec = y * rho_mix
+    # rho_mix = arho_vec.sum(axis=-1, keepdims=True)
+
+    # Extract mass fractions
     yw = y[...,1:2]
     ya = y[...,0:1]
     # Compute internal energy
@@ -363,15 +521,18 @@ class WLMA():
     vol_energy_internal = vol_energy - kinetic
 
     # Critical monitor
-    # class FilterLog():
-    #   def __init__(self):
-    #     self.buffer = []
-    #     self.critical = False
-    #   def log(self, level:str, data:dict):
-    #     if level == "critical":
-    #       self.critical = True
-    #     self.buffer.append(data)
-    # flog = FilterLog()
+    class FilterLog():
+      def __init__(self):
+        self.buffer = []
+        self.critical = False
+      def log(self, level:str, data:dict):
+        if level == "critical":
+          self.critical = True
+        self.buffer.append(data)
+        # Cicular buffer
+        if len(self.buffer) > 10000:
+          self.buffer = self.buffer[-5000:]
+    logger = FilterLog()
 
     # Call Cython iterative solve for rhow, p, T
     _out = float_mix_functions.vec_conservative_to_pT_WLMA(
@@ -383,11 +544,33 @@ class WLMA():
     p           = np.reshape(_out[1::4], yw.shape)
     T           = np.reshape(_out[2::4], yw.shape)
     sound_speed = np.reshape(_out[3::4], yw.shape)
-    # Postprocess for volume fraction TODO: handle rhow == 0 case
+    # Postprocess for volume fraction (no boundedness guarantee if rhow == 0)
     volfracW = arho_vec[...,1:2] / (1e-16 + rhow)
 
+    # Pressure clipping for long-term stability against iteration fail
+    p_clipped = np.clip(p, 1e3, 100e6)
+
+    ''' Debug section '''
+
     # Propagate errors
-    # if flog.critical > 0:
+    # if logger.critical > 0:
     #   print("Critical log")
 
-    return rhow, p, T, sound_speed, volfracW
+    # Check kernel outputs
+    # kernel_outputs = [float_mix_functions.kernel2_WLMA_debug(_volfracW, _T, _vol_energy_internal,
+    #   _rho_mix, _yw, _ya, 
+    #   self.K, self.p_m0, self.rho_m0, self.c_v_m0, self.R_a, self.gamma_a)
+    #   for (_volfracW, _T, _vol_energy_internal, _rho_mix, _yw, _ya)
+    #   in zip(volfracW.ravel(), T.ravel(), vol_energy_internal.ravel(), rho_mix.ravel(), yw.ravel(), ya.ravel())]
+    # # Unpack outputs: residual vector, residual jac, hypothetical state, p, region int flag
+    # _f, _J, _lv_hypothetical, _pmix, _region_type = zip(*kernel_outputs)
+    # # Compute residual norms
+    # fnorms = np.linalg.norm(_f, axis=-1)
+    # # Check for large residuals and large water mass fractions
+    # if np.any((fnorms > 1e-3) & (yw.ravel() >= 0.2)):
+    #   _dummy_var = True
+    # Check for clip activation
+    if not np.all(p_clipped == p):
+      _dummy_var = True
+
+    return rhow, p_clipped, T, sound_speed, volfracW
