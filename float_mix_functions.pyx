@@ -22,11 +22,19 @@ cdef extern from "math.h":
   double log(double x)
   double fabs(double x)
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cdef DTYPE_t min(DTYPE_t x, DTYPE_t y):
-  return x if x <= y else y
+  return x if x < y else y
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cdef DTYPE_t max(DTYPE_t x, DTYPE_t y):
-  return x if x >= y else y
+  return y if x < y else x
 
 ''' Estimate initial temperature '''
 # Set liquid linearization point
