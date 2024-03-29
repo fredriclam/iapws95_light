@@ -22,7 +22,7 @@ Python implementation is implemented in numpy and treats inputs and outputs as
 type `np.array`. Coefficients to the terms in the Helmholtz function are padded
 and evaluated in a vector fashion. The Cython implementation is optimized for
 speed, but requires some installation as described below. **The Python
-implementation is not dependent on the Cythin implementation.**
+implementation is not dependent on the Cython implementation.**
 
 ## Installation (pure python)
 
@@ -94,3 +94,7 @@ To compile with .html output highlighting python interactions, run
 ```cython -a float_phi_functions.pyx```
 
 with `cython` in the system path variable. Alternatively, include the `annotate=True` flag in `cythonize` in `setup.py`.
+
+## Author
+
+Fredric Lam ([fredriclam](https://github.com/fredriclam/))
