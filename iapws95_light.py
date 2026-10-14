@@ -7,13 +7,21 @@ Computations are typically done nondimensionally, and in SI units otherwise.
 import csv
 import numpy as np
 from time import perf_counter
+import os
 
 ''' Module-level data loading ''' 
 
-DATAPATH_IDEAL = 'ideal.csv'
-DATAPATH_RES0 = 'residual_1_51.csv'
-DATAPATH_RES1 = 'residual_52_54.csv'
-DATAPATH_RES2 = 'residual_55_56.csv'
+# Absolute path
+abs = lambda filepath: os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    filepath)
+
+DATAPATH_IDEAL = abs('ideal.csv')
+DATAPATH_RES0 = abs('residual_1_51.csv')
+DATAPATH_RES1 = abs('residual_52_54.csv')
+DATAPATH_RES2 = abs('residual_55_56.csv')
+
+
 
 ''' Load data ''' 
 with open(DATAPATH_IDEAL, newline='') as csvfile:
