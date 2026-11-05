@@ -4355,6 +4355,222 @@ cpdef DTYPE_t c_v(DTYPE_t rho, DTYPE_t T):
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cpdef DTYPE_t c_p(DTYPE_t rho, DTYPE_t T):
+  ''' Specific heat, isobaric (SI -- J / (kg K) ). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef DTYPE_t x
+  cdef Derivatives_phir_0_1_2 _phir_all
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+        # Compute saturated vapour heat capacity, nondim
+        _phir_all = fused_phir_all(dsatv, t)
+        _c0 = 1.0 + dsatv * _phir_all.phir_d - dsatv * t * _phir_all.phir_dt
+        _c1 = (-t * t * (_phir_all.phir_tt + phi0_tt(dsatv, t))
+          + _c0 * _c0 / (1.0 + 2.0 * dsatv * _phir_all.phir_d + dsatv * dsatv * _phir_all.phir_dd)
+        )
+        # Compute saturated liquid heat capacity, nondim
+        _phir_all = fused_phir_all(dsatl, t)
+        _c0 = 1.0 + dsatl * _phir_all.phir_d - dsatl * t * _phir_all.phir_dt
+        _c2 = (-t * t * (_phir_all.phir_tt + phi0_tt(dsatl, t))
+          + _c0 * _c0 / (1.0 + 2.0 * dsatl * _phir_all.phir_d + dsatl * dsatl * _phir_all.phir_dd)
+        )
+        # Return mass fraction weighted result
+        return R * (x * _c1 + (1.0 - x) * _c2)
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase computation
+  _phir_all = fused_phir_all(d, t)
+  _c0 = 1.0 + d * _phir_all.phir_d - d * t * _phir_all.phir_dt
+  return R * (-t * t * (_phir_all.phir_tt + phi0_tt(d, t))
+    + _c0 * _c0 / (1.0 + 2.0 * d * _phir_all.phir_d + d * d * _phir_all.phir_dd)
+  )
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t s(DTYPE_t rho, DTYPE_t T):
+  ''' Entropy per unit mass (SI -- J / (kg K)). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef DTYPE_t x
+  cdef Derivatives_phir_0_1_2 _phir_all
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+        # Compute saturated vapour entropy, nondim
+        _phir_all = fused_phir_all(dsatv, t)
+        _c1 = (t * (_phir_all.phir_t + phi0_t(dsatv, t))
+         - phi0(dsatv, t) - _phir_all.phir )
+        # Compute saturated liquid entropy, nondim
+        _phir_all = fused_phir_all(dsatl, t)
+        _c2 = (t * (_phir_all.phir_t + phi0_t(dsatl, t))
+         - phi0(dsatl, t) - _phir_all.phir )
+        # Return mass fraction weighted result
+        return R * (x * _c1 + (1.0 - x) * _c2)
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  _phir_all = fused_phir_all(d, t)
+  return R * (t * (_phir_all.phir_t + phi0_t(d, t))
+         - phi0(d, t) - _phir_all.phir)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t h(DTYPE_t rho, DTYPE_t T):
+  ''' Enthalpy per unit mass (SI -- J / kg). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef Pair sat_pair
+  cdef DTYPE_t x
+  cdef Derivatives_phir_0_1_2 _phir_all
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Compute precise saturation curve and saturation pressure
+      sat_pair = rho_sat(T)
+      dsatl = sat_pair.first / rhoc
+      dsatv = sat_pair.second / rhoc
+      if d <= dsatl and d >= dsatv:
+        # Compute vapour mass fraction
+        x = (1.0 / rho - 1.0 / sat_pair.first) \
+             / (1.0 / sat_pair.second - 1.0 / sat_pair.first)
+        # Compute saturated vapour entropy, nondim
+        _phir_all = fused_phir_all(dsatv, t)
+        _c1 = (1.0 + t * (_phir_all.phir_t + phi0_t(dsatv, t))
+         + dsatv * _phir_all.phir_d)
+        # Compute saturated liquid entropy, nondim
+        _phir_all = fused_phir_all(dsatl, t)
+        _c2 = (1.0 + t * (_phir_all.phir_t + phi0_t(dsatl, t))
+         + dsatl * _phir_all.phir_d )
+        # Return mass fraction weighted result
+        return R * T * (x * _c1 + (1.0 - x) * _c2)
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  _phir_all = fused_phir_all(d, t)
+  return R * T * (1.0 + t * (_phir_all.phir_t + phi0_t(d, t))
+         + d * _phir_all.phir_d)
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef DTYPE_t alpha(DTYPE_t rho, DTYPE_t T):
+  ''' Thermal expansion coefficient (SI -- 1/K). '''
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  cdef DTYPE_t _phir_d, _phir_dd
+  cdef DTYPE_t _c0, _c1, _c2
+  cdef DTYPE_t dsatl = 1.0
+  cdef DTYPE_t dsatv = 0
+  cdef DTYPE_t sat_atol = 0.5e-2
+  cdef SatTriple sat_triple
+  cdef Derivatives_phir_0_1_2 _phir_all
+
+  # Compute approximate saturation curve
+  cdef unsigned short i
+  if t > 1.0:
+    _c0 = 1.0-1.0/t
+    _c1 = _c0**(1.0/6.0)
+    _c2 = _c1 * _c1
+    for i in range(6):
+      dsatl += satl_coeffsb[i] * pow_fd(_c2, satl_powsb_times3[i])
+      dsatv += satv_coeffsc[i] * pow_fd(_c1, satv_powsc_times6[i])
+    dsatv = exp(dsatv)
+
+    # Check if in or near phase equilibrium region
+    if d < dsatl + sat_atol and d > dsatv - sat_atol:
+      # Not implemented TODO: add thermal expansion coefficient for LV mix?
+      return -1.0
+
+    # TODO: Near-critical-point treatment
+    pass
+
+  # Pure phase pressure computation
+  _phir_all = fused_phir_all(d, t)
+  return ((1.0 / T) *
+          (1.0 + d * _phir_all.phir_d - d * t * _phir_all.phir_dt)
+          / (1.0 + 2.0 * d * _phir_all.phir_d + d * d * _phir_all.phir_dd)
+  )
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cpdef DTYPE_t rhol_pT(DTYPE_t p, DTYPE_t T):
   ''' Return liquid density at given p, T. Return value is -1.0 if p, T is not
   a valid equilibrium liquid state. '''
