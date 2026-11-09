@@ -54,6 +54,11 @@ cdef struct TriplerhopT:
   DTYPE_t rhow
   DTYPE_t p
   DTYPE_t T
+cdef struct Grad_e:
+  DTYPE_t dedT
+  DTYPE_t dedv
+  DTYPE_t p
+  DTYPE_t x
 # Experimental feature: regression weights for est. T(yw, vol_energy, rho_mix)
 cdef DTYPE_t[12] static_regression_weights = [
   115.921763310165275, -316.916654834257770, 124.876068728982972,
@@ -495,6 +500,163 @@ cpdef DTYPE_t rho_l_pt(DTYPE_t p, DTYPE_t T):
     if step*step < 1e-16:
       break
   return d*rhoc
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Grad_e grad_e_tv(DTYPE_t T, DTYPE_t v):
+  ''' Compute gradient of e(T, v) for pure water, accounting
+  for liquid-vapour equilibrium. '''
+  
+  cdef DTYPE_t p, psat, rho_satl, rho_satv, d0, d1
+  cdef DTYPE_t dG0dt, dG1dt, dG0dd0, dG1dd0, dG0dd1, dG1dd1, _det, dd0dt, dd1dt
+  cdef DTYPE_t dv0dT, dv1dT, du0dT, du1dT, vl, vv, dpsatdT, dxdT
+  cdef DTYPE_t dpdT, dedv, dedT
+  cdef DTYPE_t uv, ul
+  cdef DTYPE_t x = -1.0
+  cdef SatTriple sat_triple
+  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
+  cdef Derivatives_phi0_0_1_2 _phi0all_0, _phi0all_1
+  cdef Derivatives_phir_0_1_2 _phirall
+  cdef bint is_LV = False
+  cdef DTYPE_t rho = 1.0 / v
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  if T < Tc:
+    # Check saturation curves
+    sat_triple = prho_sat(T)
+    psat, rho_satl, rho_satv = \
+      sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+    if rho_satv <= rho and rho <= rho_satl:
+      # Set LV flag (if False, should re-calculate as single phase)
+      is_LV = True
+      # Compute steam fraction (fraction vapor mass per total water mass)
+      x = (1.0 / rho - 1.0 / rho_satl) / (1.0 / rho_satv - 1.0 / rho_satl)
+
+      # Compute temperature update using saturation relation
+      d0 = rho_satl/rhoc
+      d1 = rho_satv/rhoc
+      _phirall_0 = fused_phir_all(d0, Tc/T)
+      _phirall_1 = fused_phir_all(d1, Tc/T)
+      _phi0all_0 = fused_phi0_all(d0, Tc/T)
+      _phi0all_1 = fused_phi0_all(d1, Tc/T)
+
+      ''' Derivatives along Maxwell-constr. level set G(t, d0, d1) = 0
+      describing the saturation curves. Used to calculate derivatives of
+      saturation volumes v_l, v_v.
+      '''
+      # Vector components of partial dG/dt = (dG0/dt; dG1/dt)
+      dG0dt = d1*_phirall_1.phir_dt + _phirall_1.phir_t + _phi0all_1.phi0_t \
+        - d0*_phirall_0.phir_dt - _phirall_0.phir_t - _phi0all_0.phi0_t
+      dG1dt = d0*d0*_phirall_0.phir_dt - d1*d1*_phirall_1.phir_dt
+      # Vector components of partial dG/d0
+      dG0dd0 = -2.0*_phirall_0.phir_d \
+        - d0*_phirall_0.phir_dd - _phi0all_0.phi0_d
+      dG1dd0 = 1.0 + 2.0 * d0 * _phirall_0.phir_d + d0*d0*_phirall_0.phir_dd
+      # Vector components of partial dG/d1
+      dG0dd1 = 2.0*_phirall_1.phir_d \
+        + d1*_phirall_1.phir_dd + _phi0all_1.phi0_d
+      dG1dd1 = -1.0 - 2.0 * d1 * _phirall_1.phir_d - d1*d1*_phirall_1.phir_dd
+      # Compute d(d0)/dt and d(d1)/dt constrainted to level set of G
+      _det = dG0dd0 * dG1dd1 - dG0dd1 * dG1dd0
+      dd0dt = -(dG1dd1 * dG0dt - dG0dd1 * dG1dt) / _det
+      dd1dt = -(-dG1dd0 * dG0dt + dG0dd0 * dG1dt) / _det
+
+      # Construct derivatives of specific volume
+      dv0dT = -1.0/(rhoc * d0 * d0) * dd0dt * (-Tc/(T*T))
+      dv1dT = -1.0/(rhoc * d1 * d1) * dd1dt * (-Tc/(T*T))
+      # Construct derivatives of internal energy
+      du0dT = R * Tc * (
+        (_phirall_0.phir_dt + _phi0all_0.phi0_dt) * dd0dt
+        + (_phirall_0.phir_tt + _phi0all_0.phi0_tt)
+      ) * (-Tc/(T*T))
+      du1dT = R * Tc * (
+        (_phirall_1.phir_dt + _phi0all_1.phi0_dt) * dd1dt
+        + (_phirall_1.phir_tt + _phi0all_1.phi0_tt)
+      ) * (-Tc/(T*T))
+
+      vl = 1.0/(d0*rhoc)
+      vv = 1.0/(d1*rhoc)
+      dxdT = ((v - vv) * dv0dT - (v - vl) * dv1dT) \
+        / ((vv - vl) * (vv - vl))      
+      uv = R * Tc * (_phirall_1.phir_t + _phi0all_1.phi0_t)
+      ul = R * Tc * (_phirall_0.phir_t + _phi0all_0.phi0_t)
+      # Final result (de/dT)_v
+      dedT = (uv - ul) * dxdT + x*du1dT + (1.0-x)*du0dT
+      # Final result (de/dv)_T
+      dedv = (uv - ul) / (vv - vl)
+
+      # Compute saturation-pressure-temperature slope
+      # dpsatdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+      #   * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+      #     - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+      
+      # Accept saturation pressure as substance pressure
+      p = psat
+
+  if not is_LV:
+    _phirall = fused_phir_all(d, t)
+    p = d * rhoc * R * T * (1.0 + d * _phirall.phir_d)
+    # dpdd = rhoc * R * T * (1.0 + 2.0 * d * _phirall.phir_d
+    #         + d * d * _phirall.phir_dd)
+    # dpdT = d * rhoc * R + d * d * rhoc * R * T * (
+    #   _phirall.phir_dt * (-Tc/(T*T)))
+    dpdT = d * rhoc * R * (
+      1.0 + d * _phirall.phir_d - t * d * _phirall.phir_dt)
+
+    dedv = T * dpdT - p
+    dedT = -t * t * R * (_phirall.phir_tt + phi0_tt(d, t))
+    
+  return Grad_e(dedT, dedv, p, x)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cpdef Pair grad_p_tv(DTYPE_t T, DTYPE_t v):
+  ''' Compute gradient of p(T, v) for pure water, accounting
+  for liquid-vapour equilibrium. '''
+  
+  cdef DTYPE_t psat, rho_satl, rho_satv, d0, d1
+  cdef DTYPE_t dpdT, dpdrho, dpdv
+  cdef DTYPE_t x = -1.0
+  cdef SatTriple sat_triple
+  cdef Derivatives_phir_0_1_2 _phirall_0, _phirall_1
+  cdef Derivatives_phir_0_1_2 _phirall
+  cdef bint is_LV = False
+  cdef DTYPE_t rho = 1.0 / v
+  cdef DTYPE_t d = rho / rhoc
+  cdef DTYPE_t t = Tc / T
+  if T < Tc:
+    # Check saturation curves
+    sat_triple = prho_sat(T)
+    psat, rho_satl, rho_satv = \
+      sat_triple.psat, sat_triple.rho_satl, sat_triple.rho_satv
+    if rho_satv <= rho and rho <= rho_satl:
+      # Set LV flag (if False, should re-calculate as single phase)
+      is_LV = True
+      # Compute saturation-pressure-temperature slope
+      d0 = rho_satl/rhoc
+      d1 = rho_satv/rhoc
+      _phirall_0 = fused_phir_all(d0, Tc/T)
+      _phirall_1 = fused_phir_all(d1, Tc/T)
+      dpdT = rho_satv * rho_satl / (rho_satv - rho_satl) \
+        * R * (log(rho_satv / rho_satl) + _phirall_1.phir - _phirall_0.phir \
+          - t * (_phirall_1.phir_t - _phirall_0.phir_t))
+      dpdv = 0
+
+  if not is_LV:
+    _phirall = fused_phir_all(d, t)
+    dpdrho = R * T * (1.0 + 2.0 * d * _phirall.phir_d
+            + d * d * _phirall.phir_dd)
+    dpdv = -rho * rho * dpdrho
+    dpdT = d * rhoc * R * (
+      1.0 + d * _phirall.phir_d - t * d * _phirall.phir_dt)
+    
+  return Pair(dpdT, dpdv)
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
